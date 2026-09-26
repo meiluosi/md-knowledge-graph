@@ -269,14 +269,18 @@ async function main() {
 		const rows = RULES.map((r) => {
 			const effective = configured[r.code] ?? r.severity;
 			const mark = effective === "off" ? "·" : "●";
-			return `  ${mark} ${r.code.padEnd(18)} ${effective.padEnd(6)} ${r.title}`;
+			const tag = r.opinion ? "   ← 意见，非事实" : "";
+			return `  ${mark} ${r.code.padEnd(18)} ${effective.padEnd(6)} ${r.title}${tag}`;
 		});
 		process.stdout.write(
 			`检查项（用 ${CONFIG_FILENAME} 的 rules 逐条覆盖）\n` +
-				`${"─".repeat(64)}\n` +
+				`${"─".repeat(76)}\n` +
 				`${rows.join("\n")}\n\n` +
 				`  ● 生效   · 已关闭\n` +
-				`  级别可选：${RULE_SEVERITIES.join(" | ")}\n`,
+				`  级别可选：${RULE_SEVERITIES.join(" | ")}\n\n` +
+				`  标「意见，非事实」的：答案取决于你的项目意图，不由工具决定——\n` +
+				`  不认同就用 \"rules\": { \"singleton-tag\": \"off\" } 关掉。\n` +
+				`  只要事实的配置见 docs/retrospective.md。\n`,
 		);
 		return;
 	}

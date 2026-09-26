@@ -2,17 +2,38 @@
 
 **把 markdown 知识库里的「沉默失效」变成 CI 里的一条红灯。**
 
-> **它不是"更好的链接检查器"。** 链接与锚点检查已经有更成熟的工具（lychee），
-> 而且做得比这里好。它独有的是**语料层**：标签体系的健康度、按问题实例的基线、
-> 以及把结构本身当作数据产出。
+> ## ⚠️ 先说结论：这个项目没有找到使用者
 >
-> 想看带图的三层能力说明、以及与现有工具的逐项对比 → [`docs/what-is-this.md`](./docs/what-is-this.md)
+> 它**工程上完成了**（296 条测试 / 4 个 Node 版本 / CI / Action / 6 份文档），
+> 但**价值上不成立**：
+>
+> - 客观可判的那部分（断链、锚点）—— **lychee 早就做了，而且做得更好**
+> - 独有的那部分（标签健康度）—— **是我发明的意见，不是事实**
+> - 两者的交集是空的
+>
+> **完整复盘：[`docs/retrospective.md`](./docs/retrospective.md)**
+>
+> 它仍然可用，也仍然用在写下它的那个博客上（在那里抓到 **19 个真实坏引用**）。
+> 它只是没有成为一件对别人有用的东西。**这个判断应该在第一个版本之前就做出来。**
+
+**那你该怎么决定用不用它：**
+
+| 你的需求 | 该用什么 |
+|---|---|
+| 只要查断链和锚点 | **用 [lychee](https://github.com/lycheeverse/lychee)** |
+| 要爬已发布站点的所有链接 | **用 lychee / linkinator** |
+| 要看交互式知识图谱 | **用 Obsidian / Quartz** |
+| 想要"只挡新增"的 CI 门禁 + 语料结构数据 | 可以看这里（但先读复盘） |
+
+想看带图的三层能力说明与逐项对比 → [`docs/what-is-this.md`](./docs/what-is-this.md)
 
 [![CI](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/ci.yml/badge.svg)](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/ci.yml)
 [![Action self-test](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/action-selftest.yml/badge.svg)](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/action-selftest.yml)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.3-3c873a)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-2-blue)
+![Status](https://img.shields.io/badge/status-frozen%20%2F%20maintenance-lightgrey)
+
 
 ---
 
@@ -81,17 +102,25 @@ mdkg --posts content --check --baseline .mdkg-baseline.json  # 之后一直用
 
 ## 能查出什么
 
-| 检查项 | 级别 | 典型场景 |
-|---|---|---|
-| **失效锚点** | 错误 | `[契约](design.md#api-contract)` —— 章节改名了，文件还在，链接已经死了 |
-| **正文断链** | 错误 | 引用的文件被删或路径写错 |
-| **本地文件系统路径** | 错误 | `![](C:\Users\me\Pictures\x.png)` —— 本机路径在网页上必然打不开 |
-| **图片文件不存在** | 错误 | 相对路径的图片已被删除或改名 |
-| frontmatter 解析失败 | 错误 | YAML 语法错误 |
-| 有 frontmatter 但没写 title | 警告 | 已用 H1 或文件名兜底，但显式写出更可靠 |
-| 无标签 / 只出现一次的标签 | 警告 | 长尾标签，靠分类或引用才连得上 |
-| 标签写法不一致 | 警告 | `PEFT` 与 `peft` 会被合并，确认不是笔误 |
-| 孤立节点 / 自引用 | 警告 | 图里的孤岛 |
+**注意"是事实还是意见"这一列——它是这个项目最重要的自我说明。**
+
+| 检查项 | 类型 | 级别 | 典型场景 |
+|---|---|---|---|
+| 正文断链 | **事实** | 错误 | 引用的文件被删或路径写错 |
+| 失效锚点 | **事实** | 错误 | `[契约](design.md#api-contract)` —— 章节改名了，文件还在，链接已经死了 |
+| 本地文件系统路径 | **事实** | 错误 | `![](C:\Users\me\Pictures\x.png)` —— 本机路径在网页上必然打不开 |
+| 图片文件不存在 | **事实** | 错误 | 相对路径的图片已被删除或改名 |
+| frontmatter 解析失败 | **事实** | 错误 | YAML 语法错误 |
+| 有 frontmatter 但没写 title | 半事实 | 警告 | 违反了你自己用 frontmatter 的这个约定 |
+| 标签写法不一致 | 半事实 | 警告 | `PEFT` 与 `peft` 会合并成同一个节点 |
+| 无标签的文章 | ⚠️ **意见** | 警告 | 很多博客就是有意不打标签 |
+| 只出现一次的标签 | ⚠️ **意见** | 警告 | `QLoRA`、`Apple Silicon` 只出现一次完全合理 |
+| 图中的孤立节点 | ⚠️ **意见** | 警告 | 纯信息，算不算问题由你定 |
+| 文章引用了自己 | ⚠️ **意见** | 警告 | 可能是有意的 canonical 链接 |
+
+> **那 4 条"意见"是我的判断，不是事实。** 我把它们设成了默认警告——这等于替你做决定，
+> 而我没有你的项目上下文。**不认同就关掉**（见 [复盘](./docs/retrospective.md) 里的配置示例），
+> 或者用 `mdkg --list-rules` 看哪些被标了「意见，非事实」。
 
 每条都精确到**行号**——文本报告是 `file:line`，GitHub 注解落在同一行。
 

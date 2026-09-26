@@ -1,7 +1,7 @@
 {
   "name": "md-knowledge-graph",
-  "version": "0.8.2",
-  "description": "检查 markdown 知识库：失效锚点/断链/本地路径/缺失图片/标签一致性 · 支持无 frontmatter 的纯 markdown · 基线只挡新增 · 附 GitHub Action 与 pre-commit",
+  "version": "1.0.0",
+  "description": "[已冻结·维护模式] 检查 markdown 语料的引用完整性与标签一致性；支持基线（只挡新增）、规则可配置、无 frontmatter 的纯 markdown。注意：客观检查部分与 lychee 重叠，详见 docs/retrospective.md",
   "type": "module",
   "license": "MIT",
   "author": "枫语 (Feng Yu)",

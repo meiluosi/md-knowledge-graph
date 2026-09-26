@@ -29,8 +29,13 @@ import { aggregateBySlug } from "./graph.js";
  *
  * 这张表是配置文件校验的依据（`mdkg.config.json` 里写了未知规则名要报错），
  * 也是 `--list-rules` 的数据来源。**新增检查项时必须在这里登记**——
- * `test/check.test.js` 里有一条测试专门盯这个：
- * 构造一份能触发全部规则的语料，断言产出的 code 集合与这张表完全一致。
+ * `test/check.config.test.js` 里有一条测试专门盯这个。
+ *
+ * `opinion: true` 用来标记**这些规则是意见，不是事实**：
+ * 「无标签算不算问题」「标签只用一次算不算问题」——
+ * 答案取决于项目意图，不由工具决定。想关就给 `off`。
+ *
+ * 详见 docs/retrospective.md 里关于「用意见填充价值」的那一节。
  */
 export const RULES = [
 	{ code: "broken-link", severity: "error", title: "正文断链（目标文件不存在）" },
@@ -39,11 +44,11 @@ export const RULES = [
 	{ code: "broken-image", severity: "error", title: "图片文件不存在" },
 	{ code: "parse-error", severity: "error", title: "frontmatter 解析失败" },
 	{ code: "missing-title", severity: "warn", title: "有 frontmatter 但没写 title" },
-	{ code: "untagged", severity: "warn", title: "无标签的文章" },
-	{ code: "singleton-tag", severity: "warn", title: "只出现一次的标签" },
 	{ code: "tag-case", severity: "warn", title: "写法不一致的标签（已按 slug 合并为同一个节点）" },
-	{ code: "orphan", severity: "warn", title: "图中的孤立节点（没有任何边）" },
-	{ code: "self-link", severity: "warn", title: "文章引用了自己" },
+	{ code: "untagged", severity: "warn", title: "无标签的文章", opinion: true },
+	{ code: "singleton-tag", severity: "warn", title: "只出现一次的标签", opinion: true },
+	{ code: "orphan", severity: "warn", title: "图中的孤立节点（没有任何边）", opinion: true },
+	{ code: "self-link", severity: "warn", title: "文章引用了自己", opinion: true },
 ];
 
 /** 全部规则代码 */
