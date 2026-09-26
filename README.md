@@ -38,6 +38,19 @@ mdkg --posts ./content -f related -o related.json  # 相关文章
 
 图片只检查**相对路径**；外链与站点绝对路径（`/img/...`）默认不做判断——**判不了的事不能当成"缺失"**，那是误报。站点绝对路径可以用 `--asset-root public` 打开检查。
 
+### frontmatter 是可选的
+
+规格文档（`design.md` / `tasks.md`）和普通 markdown 通常没有 frontmatter。这类语料**照样能跑**——标题按 `frontmatter.title → 第一个 H1 → 文件名` 兜底，没有标签就不做标签检查。
+
+```bash
+$ mdkg --posts docs --check
+✗ 失效锚点（文件存在，但章节不存在） —— 1 项
+    tasks:7  →  design  #ghost
+错误 1 · 警告 0  →  退出码 1
+```
+
+**这正是它最有用的场景**：跨文件的章节引用完整性——文件都在，某人的章节改名了，链接就静默失效了。
+
 ### 但它可能一开就红 —— 所以有基线
 
 一个攒了 40 条历史断链的知识库，第一次跑 `--check` 拿到 40 个错误、退出码 1。**人不会去修那 40 条——他会在 CI 里删掉这一步。** 门禁就是这样死的。
@@ -207,7 +220,7 @@ $ mdkg --posts examples --check
 **GitHub Action**（不需要先 `npm install`）：
 
 ```yaml
-- uses: meiluosi/md-knowledge-graph@v0.5.0
+- uses: meiluosi/md-knowledge-graph@v0.7.0
   with:
     posts: content
     baseline: .mdkg-baseline.json   # 可选
@@ -227,7 +240,7 @@ $ mdkg --posts examples --check
 ```yaml
 repos:
   - repo: https://github.com/meiluosi/md-knowledge-graph
-    rev: v0.5.0
+    rev: v0.7.0
     hooks: [ { id: md-knowledge-graph, args: [--posts, content, --check] } ]
 ```
 
@@ -263,7 +276,8 @@ repos:
 - 不提取正文里的实体或关键词；相关文章不做全局图算法（PageRank、社区发现）
 - 只检查本地语料内的引用，不发起网络请求验证外部链接
 - **依赖说清楚**：2 个直接依赖，安装后共 **11 个依赖包**。`github-slugger` 零传递依赖；`gray-matter` 带进 9 个传递依赖
-- 下一步往哪走、以及**明确不做什么**，见 [`docs/roadmap.md`](./docs/roadmap.md)
+- 演进方向、**明确不做什么**、以及**什么时候算做完**，见 [`docs/roadmap.md`](./docs/roadmap.md)
+  （结论：再做一版规则配置，然后功能冻结。**这个项目的终点在采纳里，不在代码里。**）
 - **一次真实语料验证的完整记录**（33 篇 / 19,673 行）见 [`docs/case-study.md`](./docs/case-study.md)
 
 ## License

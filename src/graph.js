@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import matter from "gray-matter";
 import { resolvePostLinks } from "./links.js";
+import { firstHeadingTitle } from "./text.js";
 
 /** 跳过这些目录名，避免把依赖或构建产物当成语料 */
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".astro"]);
@@ -106,9 +107,27 @@ export async function readCorpus(dir) {
 			continue;
 		}
 
-		const title = typeof data.title === "string" ? data.title.trim() : "";
+		const body = content ?? "";
+		const frontmatterTitle = typeof data.title === "string" ? data.title.trim() : "";
+		// 有 frontmatter 区块（而不只是 title）才认为"作者在用 frontmatter"，
+		// 用于区分"忘了写 title"与"这类文档本来就没有 frontmatter"
+		const hasFrontmatter = Object.keys(data).length > 0;
+
+		/*
+		 * 标题兜底：frontmatter → 第一个 H1 → 文件名。
+		 *
+		 * 必须有兜底。规格文档（design.md / tasks.md）与普通 markdown 文档
+		 * **通常没有 frontmatter**——而它们正是本工具声称要服务的主要场景。
+		 * 早先版本要求必须有 frontmatter title，否则直接跳过整个文件，
+		 * 结果是：工具在它自己的 docs/ 上都跑不起来。
+		 */
+		const headingTitle = frontmatterTitle ? "" : firstHeadingTitle(body);
+		const fallbackTitle = headingTitle || path.basename(rel).replace(/\.mdx?$/i, "");
+		const title = frontmatterTitle || fallbackTitle;
+
 		if (!title) {
-			skipped.push({ file: rel, reason: "没有 title 字段" });
+			// 理论上到不了这里（文件名总是有），留作安全网
+			skipped.push({ file: rel, reason: "无法确定标题" });
 			continue;
 		}
 
@@ -120,7 +139,7 @@ export async function readCorpus(dir) {
 		//
 		// 这里用「正文是原文的后缀」这个性质来定位，而不是用正则去匹配
 		// frontmatter 分隔符——后者要处理各种边界，且容易与实际剥离行为不一致。
-		const lineOffset = lineCountBefore(raw, content ?? "");
+		const lineOffset = lineCountBefore(raw, body);
 
 		posts.push({
 			id: rel.replace(/\.mdx?$/i, ""),
@@ -128,8 +147,13 @@ export async function readCorpus(dir) {
 			tags: normalizeList(data.tags),
 			category: typeof data.category === "string" ? data.category.trim() : "",
 			file,
-			content: content ?? "",
+			content: body,
 			lineOffset,
+			hasFrontmatter,
+			// 显式的布尔标记，而不是让检查器去推断。
+			// 推断（比如 `!post.frontmatterTitle`）在字段缺失时会误判——
+			// 内存里构造的语料没有这个字段，于是每一篇都被报"缺 title"。
+			missingFrontmatterTitle: hasFrontmatter && !frontmatterTitle,
 		});
 	}
 

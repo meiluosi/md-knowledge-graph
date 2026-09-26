@@ -105,20 +105,46 @@ describe("readPosts —— 端到端读取示例语料", () => {
 });
 
 describe("readPosts —— 边界情况", () => {
-	it("没有 title 的文件被跳过，而不是造出空节点", async () => {
+	it("有 frontmatter 但没 title 时，用第一个 H1 兜底", async () => {
 		const dir = await makeCorpus({
 			"good.md": "---\ntitle: 有标题\ntags: [a, b]\n---\n正文\n",
-			"bad.md": "---\ntags: [a, b]\n---\n没有标题\n",
+			"h1.md": "---\ntags: [a, b]\n---\n# 来自一级标题\n\n正文\n",
+		});
+		const posts = await readPosts(dir);
+		assert.equal(posts.length, 2);
+		assert.equal(posts.find((p) => p.id === "h1").title, "来自一级标题");
+	});
+
+	it("既没有 title 也没有 H1 时，用文件名兜底", async () => {
+		const dir = await makeCorpus({
+			"有些名字.md": "---\ntags: [a, b]\n---\n没有标题也没有一级标题\n",
 		});
 		const posts = await readPosts(dir);
 		assert.equal(posts.length, 1);
-		assert.equal(posts[0].title, "有标题");
+		assert.equal(posts[0].title, "有些名字");
 	});
 
-	it("没有 frontmatter 的文件被跳过", async () => {
-		const dir = await makeCorpus({ "plain.md": "# 就是一段普通 markdown\n" });
+	it("**完全没有 frontmatter 的纯 markdown 也会被读取**", async () => {
+		// 这是关键行为：规格文档（design.md / tasks.md）通常没有 frontmatter，
+		// 早先版本会把它们全部跳过，导致工具在主要目标场景上跑不起来。
+		const dir = await makeCorpus({ "design.md": "# 设计\n\n## 接口契约\n" });
 		const posts = await readPosts(dir);
-		assert.equal(posts.length, 0);
+		assert.equal(posts.length, 1);
+		assert.equal(posts[0].title, "设计");
+		assert.equal(posts[0].hasFrontmatter, false);
+		assert.deepEqual(posts[0].tags, []);
+	});
+
+	it("H1 里的行内标记被清掉", async () => {
+		const dir = await makeCorpus({ "a.md": "# **粗体**与`代码`\n" });
+		const posts = await readPosts(dir);
+		assert.equal(posts[0].title, "粗体与代码");
+	});
+
+	it("围栏代码块里的 # 不会被当成标题", async () => {
+		const dir = await makeCorpus({ "a.md": "```sh\n# 这是注释\n```\n\n# 真标题\n" });
+		const posts = await readPosts(dir);
+		assert.equal(posts[0].title, "真标题");
 	});
 
 	it("子目录被递归读取，且 id 带上了相对路径", async () => {

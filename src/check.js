@@ -161,15 +161,24 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 	add(
 		"missing-title",
 		"warn",
-		"缺少 title 的文章被跳过",
+		"有 frontmatter 但没写 title",
 		skipped
 			.filter((s) => s.reason === "没有 title 字段")
 			.map((s) => ({
 				key: `missing-title|${s.file}`,
 				message: s.file,
 				file: s.file,
-			})),
-		"没有 title 的文件无法在图里标识，已跳过。",
+			}))
+			.concat(
+				posts
+					.filter((p) => p.missingFrontmatterTitle === true)
+					.map((p) => ({
+						key: `missing-title|${p.id}`,
+						message: `${p.id}  （已用「${p.title}」兜底）`,
+						file: p.file ?? "",
+					})),
+			),
+		"写了 frontmatter 却没给 title。已用第一个一级标题或文件名兜底，但显式写出更可靠。",
 	);
 
 	add(
@@ -177,7 +186,10 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 		"warn",
 		"无标签的文章",
 		posts
-			.filter((p) => p.tags.length === 0)
+			// 只对"作者在用 frontmatter"的文章报——
+			// 纯 markdown 语料（规格文档、普通文档）本来就不用标签，
+			// 对它们逐篇报无标签只是噪声，会掩盖真正的问题。
+			.filter((p) => p.tags.length === 0 && p.hasFrontmatter)
 			.map((p) => ({
 				key: `untagged|${p.id}`,
 				message: p.id,

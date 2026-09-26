@@ -13,8 +13,11 @@ import { buildGraph } from "../src/graph.js";
 
 /** 造一份语料 + 图，省去文件系统 */
 function setup(posts, options = {}) {
-	const graph = buildGraph(posts, { minTagCount: 2, ...options });
-	return runChecks({ posts, skipped: options.skipped ?? [], graph, minTagCount: 2 });
+	// 默认按"作者在用 frontmatter"处理——untagged / missing-title 只对这类文章报。
+	// 需要测"纯 markdown 语料"时，在用例里显式传 hasFrontmatter: false 覆盖。
+	const withFm = posts.map((p) => ({ hasFrontmatter: true, ...p }));
+	const graph = buildGraph(withFm, { minTagCount: 2, ...options });
+	return runChecks({ posts: withFm, skipped: options.skipped ?? [], graph, minTagCount: 2 });
 }
 
 const codes = (r) => r.groups.map((g) => g.code);
@@ -48,6 +51,37 @@ describe("runChecks —— 警告级", () => {
 		const r = setup([{ id: "a", title: "A", tags: [], category: "C", content: "" }]);
 		assert.ok(codes(r).includes("untagged"));
 		assert.equal(r.errors, 0);
+	});
+
+	it("**纯 markdown 语料不报「无标签」**（它们本来就不用标签）", () => {
+		// 规格文档 design.md / tasks.md 没有 frontmatter，也就没有标签。
+		// 对它们逐篇报无标签只是噪声，会掩盖真正的问题。
+		const r = setup([
+			{ id: "design", title: "设计", tags: [], category: "", content: "", hasFrontmatter: false },
+			{ id: "tasks", title: "任务", tags: [], category: "", content: "", hasFrontmatter: false },
+		]);
+		assert.ok(!codes(r).includes("untagged"), "纯 markdown 不该被报无标签");
+	});
+
+	it("写了 frontmatter 却没给 title 会被报出（并说明用了什么兜底）", () => {
+		const r = setup([
+			{
+				id: "a",
+				title: "文件名兜底",
+				tags: ["x", "y"],
+				category: "",
+				content: "",
+				missingFrontmatterTitle: true,
+			},
+		]);
+		const g = r.groups.find((x) => x.code === "missing-title");
+		assert.ok(g, "应报出 missing-title");
+		assert.ok(g.items[0].message.includes("文件名兜底"), "应说明兜底用的是什么");
+	});
+
+	it("没有该标记时不会误报 missing-title", () => {
+		const r = setup([{ id: "a", title: "A", tags: ["x", "y"], category: "C", content: "" }]);
+		assert.ok(!codes(r).includes("missing-title"), "字段缺失不该被推断成缺 title");
 	});
 
 	it("只出现一次的标签被报出", () => {

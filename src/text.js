@@ -80,6 +80,31 @@ export function unwrapInlineCode(content) {
 }
 
 /**
+ * 取正文里第一个一级标题的文字，用作没有 frontmatter 时的标题兜底。
+ *
+ * 只认 `#`（不认 `##`）：文档里的 `##` 通常是小节，拿它当标题会得到
+ * 「快速开始」「安装」这类无意义的名字。
+ *
+ * @param {string} content 正文
+ * @returns {string} 找不到时返回空串
+ */
+export function firstHeadingTitle(content) {
+	const body = stripFencedBlocks(String(content ?? ""));
+	for (const line of body.split("\n")) {
+		const m = line.match(/^ {0,3}#\s+(.*?)\s*#*\s*$/);
+		if (m) {
+			// 去掉标题里的行内标记：**粗体** `代码` *斜体*
+			return m[1]
+				.replace(/`([^`]*)`/g, "$1")
+				.replace(/\*\*([^*]*)\*\*/g, "$1")
+				.replace(/[*_]/g, "")
+				.trim();
+		}
+	}
+	return "";
+}
+
+/**
  * 把字符偏移量换算成 1-based 的行号与列号。
  *
  * 列号按 UTF-16 码元计（与 GitHub 注解的 `col` 一致）。

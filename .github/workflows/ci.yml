@@ -273,6 +273,58 @@ jobs:
           grep -q "未添加任何新问题" /tmp/prune-out2.txt || { echo "::error::缺少说明"; exit 1; }
           echo "✓ prune 只删不加"
 
+      - name: 纯 markdown（无 frontmatter）语料必须能跑
+        run: |
+          set -eu
+          mkdir -p /tmp/plainmd
+          cat > /tmp/plainmd/design.md <<'EOF'
+          # 设计
+
+          ## 接口契约
+
+          见 [任务清单](./tasks.md#要做的三件事)
+          EOF
+          cat > /tmp/plainmd/tasks.md <<'EOF'
+          # 任务
+
+          ## 要做的三件事
+
+          基于 [设计](./design.md#接口契约) 拆解。
+
+          详见 [不存在的章节](./design.md#ghost)
+          EOF
+
+          # 没有 frontmatter 也必须被读进来（早先版本会全部跳过）
+          node src/cli.js --posts /tmp/plainmd --check > /tmp/plain.txt 2>&1 && {
+            echo "::error::失效锚点应让检查失败"; cat /tmp/plain.txt; exit 1;
+          }
+          grep -q "失效锚点" /tmp/plain.txt || { echo "::error::未报失效锚点"; cat /tmp/plain.txt; exit 1; }
+          grep -q "ghost" /tmp/plain.txt || { echo "::error::未点名 ghost"; exit 1; }
+          # 有效锚点不该被误报
+          if grep -q "接口契约\|要做的三件事" /tmp/plain.txt; then
+            echo "::error::有效锚点被误报"; cat /tmp/plain.txt; exit 1
+          fi
+          # 纯 markdown 不该产生「无标签」噪声
+          if grep -q "无标签" /tmp/plain.txt; then
+            echo "::error::纯 markdown 被报了无标签"; cat /tmp/plain.txt; exit 1
+          fi
+
+          # 标题兜底：第一个 H1
+          node src/cli.js --posts /tmp/plainmd --format json --compact > /tmp/plain.json 2>/dev/null
+          node -e '
+            const g = require("/tmp/plain.json");
+            const titles = g.nodes.filter((n) => n.type === "post").map((n) => n.label).sort();
+            if (titles.join(",") !== "任务,设计") {
+              console.error("H1 标题兜底不对:", titles); process.exit(1);
+            }
+            console.log("✓ 纯 markdown：标题兜底自 H1，交叉引用连成边，失效锚点被报");
+          '
+
+      - name: 检查本项目自己的文档（dogfooding）
+        run: |
+          node src/cli.js --posts docs --check
+          echo "✓ docs/ 自身通过检查"
+
       - name: 自定义 URL 模板与 --no-link-edges 可用
         run: |
           node src/cli.js --posts examples --no-link-edges --format json --out /tmp/nolink.json

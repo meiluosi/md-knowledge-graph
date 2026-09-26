@@ -18,8 +18,10 @@ const CWD = "/repo";
 
 /** 造一份语料并跑检查 */
 function scan(posts, options = {}) {
-	const graph = buildGraph(posts, { minTagCount: 2, ...options.graph });
-	return runChecks({ posts, skipped: options.skipped ?? [], graph, minTagCount: 2 });
+	// 默认按"作者在用 frontmatter"处理，与 check.test.js 保持一致
+	const withFm = posts.map((p) => ({ hasFrontmatter: true, ...p }));
+	const graph = buildGraph(withFm, { minTagCount: 2, ...options.graph });
+	return runChecks({ posts: withFm, skipped: options.skipped ?? [], graph, minTagCount: 2 });
 }
 
 /** 一行注解拆成 {props, text} */
