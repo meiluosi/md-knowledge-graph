@@ -51,48 +51,27 @@ mdkg --posts content --check --baseline .mdkg-baseline.json  # 之后一直用�
 
 ```
 $ mdkg --posts content --check --baseline .mdkg-baseline.json
-检查报告 · content（基线：.mdkg-baseline.json）
-────────────────────────
 ✓ 没有新增问题（40 项已知问题仍在基线里）
-────────────────────────
-错误 0 · 警告 0  ·  已知 40 项已忽略
-```
+错误 0 · 警告 0  ·  已知 40 项已忽略                        ← 退出码 0
 
-一旦有新东西进来，只有它会被报出来：
-
-```
+# 后来引入一条新断链 —— 只报它：
 ✗ 正文断链 —— 1 项（另有 1 项已知，已忽略）
     new  →  ./nope.md
-错误 1 · 警告 0  ·  已知 40 项已忽略  → 退出码 1
+错误 1 · 警告 0  ·  已知 40 项已忽略                        ← 退出码 1
+
+# 修好的旧问题会被识别出来，提示你清理基线：
+ℹ 基线里有 1 项已不再出现：broken-link|a|./deleted.md
 ```
 
-修好的旧问题会被识别出来，提示你清理基线：
-
-```
-ℹ 基线里有 1 项已不再出现，可以清理：
-    broken-link|2026-01-08-qlora-4bit|./deleted.md
-```
-
-基线文件是 **JSON、按 key 排序、可以人工 review** 的——它该被提交进仓库：
+基线文件是 **JSON、按 key 排序、可以人工 review** 的，该提交进仓库：
 
 ```json
-{
-  "schemaVersion": 1,
-  "generatedAt": "2026-09-26T13:59:20.320Z",
-  "generatedBy": "md-knowledge-graph@0.4.0",
-  "count": 9,
-  "issues": [
-    {
-      "key": "broken-anchor|a|b|flash-attention",
-      "code": "broken-anchor",
-      "severity": "error",
-      "message": "a  →  b  #flash-attention"
-    }
-  ]
-}
+{ "schemaVersion": 1, "generatedBy": "md-knowledge-graph@0.4.0", "count": 9,
+  "issues": [ { "key": "broken-anchor|a|b|flash-attention", "code": "broken-anchor",
+                "severity": "error", "message": "a  →  b  #flash-attention" } ] }
 ```
 
-`key` 只依赖问题本身——**不含行号、顺序、措辞、计数**。所以在语料里插一篇无关文章、或者工具改了一次提示文案，都不会让整份基线失效。这是它能用下去的前提。
+`key` 只依赖问题本身——**不含行号、顺序、措辞、计数**。插一篇无关文章、或工具改一次提示文案，都不会让整份基线失效。这是它能用下去的前提。
 
 ## Quickstart
 
