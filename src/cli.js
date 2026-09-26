@@ -34,6 +34,7 @@ mdkg —— 从 markdown 构建知识图谱，并检查知识库
       --min-tag-count <n>   标签出现次数低于 n 则不入图（默认 2）
       --max-nodes <n>       节点数上限（默认 200）
       --no-link-edges       不生成正文引用边（post↔post）
+      --no-anchor-check     不校验 #锚点 是否存在（渲染器 slug 规则不同时用）
       --post-url <tpl>      文章 URL 模板，如 /posts/{id}/
       --tag-url <tpl>       标签 URL 模板，如 /tags/{slug}/
       --category-url <tpl>  分类 URL 模板，如 /categories/{slug}/
@@ -94,6 +95,7 @@ async function main() {
 			"min-tag-count": { type: "string" },
 			"max-nodes": { type: "string" },
 			"no-link-edges": { type: "boolean", default: false },
+			"no-anchor-check": { type: "boolean", default: false },
 			"post-url": { type: "string" },
 			"tag-url": { type: "string" },
 			"category-url": { type: "string" },
@@ -141,6 +143,7 @@ async function main() {
 		minTagCount,
 		maxNodes,
 		linkEdges: !values["no-link-edges"],
+		anchorCheck: !values["no-anchor-check"],
 		postUrl: values["post-url"],
 		tagUrl: values["tag-url"],
 		categoryUrl: values["category-url"],
@@ -189,9 +192,12 @@ async function main() {
 			`（含 ${meta.linkEdges} 条正文引用）` +
 			`${meta.truncated ? "，已按 --max-nodes 裁剪" : ""}\n`,
 	);
-	if (meta.brokenLinks > 0) {
+	if (meta.brokenLinks > 0 || meta.brokenAnchors > 0) {
+		const parts = [];
+		if (meta.brokenLinks > 0) parts.push(`${meta.brokenLinks} 条断链`);
+		if (meta.brokenAnchors > 0) parts.push(`${meta.brokenAnchors} 个失效锚点`);
 		process.stderr.write(
-			`提示：发现 ${meta.brokenLinks} 条断链。运行 mdkg --posts ${values.posts} --check 查看明细。\n`,
+			`提示：发现 ${parts.join("、")}。运行 mdkg --posts ${values.posts} --check 查看明细。\n`,
 		);
 	}
 }

@@ -68,6 +68,54 @@ jobs:
           fi
           echo "✓ 检查器按预期报了错"
 
+      - name: 锚点校验：有效锚点不报、失效锚点必报、代码块假锚点不报
+        run: |
+          mkdir -p /tmp/anchors
+          cat > /tmp/anchors/a.md <<'EOF'
+          ---
+          title: A
+          tags: [x, y]
+          category: C
+          ---
+          ## First Section
+
+          [有效](./b.md#second-section)
+          [**失效](./b.md#renamed-section)
+          [本文有效](#first-section)
+
+          ```
+          [假锚点](#fake)
+          ```
+          EOF
+          cat > /tmp/anchors/b.md <<'EOF'
+          ---
+          title: B
+          tags: [x, y]
+          category: C
+          ---
+          ## Second Section
+
+          回到 [A](./a.md)
+          EOF
+
+          if node src/cli.js --posts /tmp/anchors --check; then
+            echo "✗ 失效锚点没有被报出来"; exit 1
+          fi
+          node src/cli.js --posts /tmp/anchors --check 2>/dev/null > /tmp/anchor-report.txt || true
+          grep -q "renamed-section" /tmp/anchor-report.txt || { echo "✗ 未点名 renamed-section"; exit 1; }
+          if grep -q "second-section\|first-section\|fake" /tmp/anchor-report.txt; then
+            echo "✗ 出现了误报（有效锚点或代码块假锚点被报）"; cat /tmp/anchor-report.txt; exit 1
+          fi
+          echo "✓ 锚点校验：命中 1 个真失效，0 个误报，--no-anchor-check 之外的行为都正确"
+
+      - name: --no-anchor-check 能关闭锚点校验
+        run: |
+          node src/cli.js --posts /tmp/anchors --check --no-anchor-check > /tmp/noanchor.txt 2>&1 && \
+            echo "✓ 关闭后退出 0" || { echo "✗ --no-anchor-check 未生效"; cat /tmp/noanchor.txt; exit 1; }
+          if grep -q "失效锚点" /tmp/noanchor.txt; then
+            echo "✗ 关闭后仍报了失效锚点"; exit 1
+          fi
+
       - name: 自定义 URL 模板与 --no-link-edges 可用
         run: |
           node src/cli.js --posts examples --no-link-edges --format json --out /tmp/nolink.json

@@ -154,3 +154,63 @@ describe("mdkg 的其它行为", () => {
 		assert.ok(r.stderr.includes("断链"));
 	});
 });
+
+describe("mdkg 的锚点校验", () => {
+	const WITH_ANCHORS = {
+		"a.md": "---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n## First\n\n[B 的第二节](./b.md#second)\n",
+		"b.md": "---\ntitle: B\ntags: [x, y]\ncategory: C\n---\n## Second\n\n回到 [A](./a.md)\n",
+	};
+
+	it("有效锚点不报错、退出 0", async () => {
+		const dir = await corpus(WITH_ANCHORS);
+		const r = await mdkg(["--posts", dir, "--check"]);
+		assert.equal(r.code, 0);
+		assert.ok(!r.stdout.includes("失效锚点"));
+	});
+
+	it("失效锚点报错、退出 1，且点名该锚点", async () => {
+		const dir = await corpus({
+			...WITH_ANCHORS,
+			"a.md": "---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n## First\n\n[B 的旧章节](./b.md#renamed)\n",
+		});
+		const r = await mdkg(["--posts", dir, "--check"]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stdout.includes("失效锚点"));
+		assert.ok(r.stdout.includes("renamed"));
+	});
+
+	it("同文件失效锚点也被报出", async () => {
+		const dir = await corpus({
+			"a.md": "---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n## First\n\n[回不去](#ghost)\n",
+		});
+		const r = await mdkg(["--posts", dir, "--check"]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stdout.includes("本文"));
+	});
+
+	it("--no-anchor-check 关闭锚点校验", async () => {
+		const dir = await corpus({
+			...WITH_ANCHORS,
+			"a.md": "---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n## First\n\n[B 的旧章节](./b.md#renamed)\n",
+		});
+		const r = await mdkg(["--posts", dir, "--check", "--no-anchor-check"]);
+		assert.equal(r.code, 0);
+		assert.ok(!r.stdout.includes("失效锚点"));
+	});
+
+	it("示例语料报出 2 个失效锚点（故意植入）", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--check"]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stdout.includes("flash-attention"));
+		assert.ok(r.stdout.includes("不存在的小节"));
+	});
+
+	it("代码块里的假锚点不会被误报", async () => {
+		const dir = await corpus({
+			"a.md":
+				"---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n## First\n\n```\n[假](#fake)\n```\n",
+		});
+		const r = await mdkg(["--posts", dir, "--check"]);
+		assert.ok(!r.stdout.includes("fake"), "代码块里的假锚点被误报");
+	});
+});

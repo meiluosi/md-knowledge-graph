@@ -217,6 +217,7 @@ export function buildGraph(posts, options = {}) {
 		minTagCount = 2,
 		maxNodes = 200,
 		linkEdges = true,
+		anchorCheck = true,
 		postUrl,
 		tagUrl,
 		categoryUrl,
@@ -232,8 +233,8 @@ export function buildGraph(posts, options = {}) {
 			: undefined;
 
 	const links = linkEdges
-		? resolvePostLinks(posts)
-		: { edges: [], broken: [], selfLinks: [], total: 0 };
+		? resolvePostLinks(posts, { anchorCheck })
+		: { edges: [], broken: [], brokenAnchors: [], selfLinks: [], total: 0 };
 
 	const nodes = [];
 	const categoryIds = new Set();
@@ -307,6 +308,7 @@ export function buildGraph(posts, options = {}) {
 		linkEdges: linkEdgeCount,
 		linksFound: links.total,
 		brokenLinks: links.broken.length,
+		brokenAnchors: links.brokenAnchors.length,
 		truncated: false,
 	};
 

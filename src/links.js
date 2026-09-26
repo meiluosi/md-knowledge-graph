@@ -13,24 +13,10 @@
  */
 
 import path from "node:path";
+import { buildAnchorIndex, hasAnchor } from "./anchors.js";
+import { stripCode } from "./text.js";
 
-/**
- * 去掉代码块与行内代码。
- *
- * 必须有这一步：技术文章里代码块经常含 `[text](url)` 这样的**示例**，
- * 如果直接全文匹配，会把示例当成真链接，从而产生大量假断链。
- * 这是实测踩到的坑，见 README 的 What didn't work。
- *
- * @param {string} content
- * @returns {string}
- */
-export function stripCode(content) {
-	return content
-		.replace(/^```[\s\S]*?^```/gm, "")
-		.replace(/^~~~[\s\S]*?^~~~/gm, "")
-		.replace(/`[^`\n]*`/g, "")
-		.replace(/<!--[\s\S]*?-->/g, "");
-}
+export { stripCode };
 
 /**
  * 从正文中提取所有链接。
@@ -87,6 +73,27 @@ function safeDecode(s) {
 }
 
 /**
+ * 把链接目标拆成「文件部分」与「锚点部分」。
+ *
+ * `./design.md#api-contract?x=1` → `{ path: "./design.md", anchor: "api-contract" }`
+ * `#section`                     → `{ path: "",          anchor: "section" }`
+ *
+ * @param {string} rawTarget
+ * @returns {{path: string, anchor: string}}
+ */
+export function splitAnchor(rawTarget) {
+	const raw = String(rawTarget ?? "");
+	const hashAt = raw.indexOf("#");
+	const beforeHash = hashAt >= 0 ? raw.slice(0, hashAt) : raw;
+	const afterHash = hashAt >= 0 ? raw.slice(hashAt + 1) : "";
+
+	return {
+		path: safeDecode(beforeHash.split("?")[0]).trim(),
+		anchor: safeDecode(afterHash.split("?")[0]).trim(),
+	};
+}
+
+/**
  * 为语料建立查找索引：多种写法 → 唯一的文章 id。
  *
  * 支持按「完整相对路径」「文件名」「去掉日期前缀的文件名」以及
@@ -121,72 +128,104 @@ export function buildLinkIndex(posts) {
 /**
  * 把单个链接目标解析成文章 id，解析不出返回 null（即断链）。
  *
+ * 只关心文件，不校验锚点。需要锚点时用 resolveLink。
+ *
  * @param {string} rawTarget 原始链接目标
  * @param {{id: string}} from 来源文章
  * @param {ReturnType<typeof buildLinkIndex>} index
  * @returns {string|null}
  */
 export function resolveTarget(rawTarget, from, index) {
+	return resolveLink(rawTarget, from, index)?.id ?? null;
+}
+
+/**
+ * 解析链接目标，同时取出锚点。
+ *
+ * @param {string} rawTarget
+ * @param {{id: string}} from
+ * @param {ReturnType<typeof buildLinkIndex>} index
+ * @returns {{id: string, anchor: string, sameFile: boolean}|null} 解析不出返回 null
+ */
+export function resolveLink(rawTarget, from, index) {
 	if (!rawTarget) return null;
 
-	let target = safeDecode(rawTarget.split("#")[0].split("?")[0]).trim();
-	if (!target) return null;
+	const { path: target, anchor } = splitAnchor(rawTarget);
+
+	// 纯锚点（#section）指向本文
+	if (!target) return anchor ? { id: from.id, anchor, sameFile: true } : null;
+
 	if (isExternal(target)) return null;
 
-	target = target.replace(/\\/g, "/");
+	const normalized = target.replace(/\\/g, "/");
 
 	// 站点绝对路径：/posts/<id>/ 或 /notes/<id>
-	if (target.startsWith("/")) {
-		const trimmed = target.replace(/^\/+/, "").replace(/\/+$/, "");
+	if (normalized.startsWith("/")) {
+		const trimmed = normalized.replace(/^\/+/, "").replace(/\/+$/, "");
 		const withoutSection = trimmed.replace(/^[a-z-]+\//i, "");
 		for (const candidate of [trimmed, withoutSection]) {
-			if (index.exact.has(candidate)) return index.exact.get(candidate);
+			if (index.exact.has(candidate)) {
+				return { id: index.exact.get(candidate), anchor, sameFile: false };
+			}
 		}
 		const base = path.posix.basename(trimmed);
-		if (index.exact.has(base)) return index.exact.get(base);
-		if (index.basename.get(base)) return index.basename.get(base);
+		if (index.exact.has(base)) return { id: index.exact.get(base), anchor, sameFile: false };
+		if (index.basename.get(base)) return { id: index.basename.get(base), anchor, sameFile: false };
 		return null;
 	}
 
 	// 相对路径：解析后去掉扩展名，得到候选 id
 	const rel = path.posix.normalize(
-		path.posix.join(path.posix.dirname(from.id), target).replace(/^\/+/, ""),
+		path.posix.join(path.posix.dirname(from.id), normalized).replace(/^\/+/, ""),
 	);
 	const candidates = [rel, rel.replace(/\.mdx?$/i, "")];
 	for (const c of candidates) {
-		if (index.exact.has(c)) return index.exact.get(c);
+		if (index.exact.has(c)) return { id: index.exact.get(c), anchor, sameFile: false };
 	}
 
 	// 不含路径分隔符的目标（如 wikilink 的 [[foo]]）：按文件名 / 去日期前缀的文件名查找。
 	// 注意只对「无斜杠」的目标启用这层回退，否则 ./gone.md 会因为
 	// 别处恰好有个 gone 而误判成有效链接，掩盖真正的断链。
-	if (!target.includes("/")) {
-		const key = path.posix.basename(target.replace(/\.mdx?$/i, ""));
-		if (index.exact.has(key)) return index.exact.get(key);
+	if (!normalized.includes("/")) {
+		const key = path.posix.basename(normalized.replace(/\.mdx?$/i, ""));
+		if (index.exact.has(key)) return { id: index.exact.get(key), anchor, sameFile: false };
 		const byBase = index.basename.get(key);
-		if (byBase) return byBase;
+		if (byBase) return { id: byBase, anchor, sameFile: false };
 		const bySlug = index.slug.get(key);
-		if (bySlug) return bySlug;
+		if (bySlug) return { id: bySlug, anchor, sameFile: false };
 	}
 
 	return null;
 }
 
 /**
- * 解析全部文章的链接，分成「已连上的边」与「断链」。
+ * 解析全部文章的链接，分成「已连上的边」「断链」「坏锚点」。
+ *
+ * 三种问题分开归类，因为它们的**修复动作不同**：
+ *   断链   → 文件没了或路径写错
+ *   坏锚点 → 文件在，但章节被改名了（文档型语料最常见的失效）
+ *   自引用 → 可能是笔误，也可能是有意的
  *
  * @param {Array<{id: string, title: string, content?: string}>} posts
+ * @param {object} [options]
+ * @param {Map<string, Set<string>>} [options.anchorIndex] 复用已有的锚点索引，省一次遍历
+ * @param {boolean} [options.anchorCheck=true] 是否校验锚点
  * @returns {{
  *   edges: Array<{from: string, to: string}>,
  *   broken: Array<{from: string, target: string, kind: string}>,
+ *   brokenAnchors: Array<{from: string, to: string, anchor: string, target: string, sameFile: boolean}>,
  *   selfLinks: Array<{from: string, target: string}>,
  *   total: number,
  * }}
  */
-export function resolvePostLinks(posts) {
+export function resolvePostLinks(posts, options = {}) {
+	const { anchorCheck = true } = options;
 	const index = buildLinkIndex(posts);
+	const anchorIndex = options.anchorIndex ?? (anchorCheck ? buildAnchorIndex(posts) : null);
+
 	const edges = [];
 	const broken = [];
+	const brokenAnchors = [];
 	const selfLinks = [];
 	const seen = new Set();
 	let total = 0;
@@ -196,24 +235,36 @@ export function resolvePostLinks(posts) {
 			if (isExternal(link.target)) continue;
 			total += 1;
 
-			// 纯锚点链接（#section）指向本文，不算引用
-			if (link.target.startsWith("#")) continue;
-
-			const to = resolveTarget(link.target, post, index);
-			if (!to) {
+			const resolved = resolveLink(link.target, post, index);
+			if (!resolved) {
 				broken.push({ from: post.id, target: link.target, kind: link.kind });
 				continue;
 			}
-			if (to === post.id) {
+
+			if (anchorIndex && resolved.anchor && !hasAnchor(anchorIndex, resolved.id, resolved.anchor)) {
+				brokenAnchors.push({
+					from: post.id,
+					to: resolved.id,
+					anchor: resolved.anchor,
+					target: link.target,
+					sameFile: resolved.sameFile,
+				});
+			}
+
+			// 同文件锚点（#section）不是图里的边
+			if (resolved.sameFile) continue;
+
+			if (resolved.id === post.id) {
 				selfLinks.push({ from: post.id, target: link.target });
 				continue;
 			}
-			const key = `${post.id}\u0000${to}`;
+
+			const key = `${post.id}\u0000${resolved.id}`;
 			if (seen.has(key)) continue;
 			seen.add(key);
-			edges.push({ from: post.id, to });
+			edges.push({ from: post.id, to: resolved.id });
 		}
 	}
 
-	return { edges, broken, selfLinks, total };
+	return { edges, broken, brokenAnchors, selfLinks, total };
 }

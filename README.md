@@ -7,7 +7,11 @@
 [![CI](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/ci.yml/badge.svg)](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/ci.yml)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.3-3c873a)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Dependencies](https://img.shields.io/badge/dependencies-1-blue)
+![Dependencies](https://img.shields.io/badge/dependencies-2-blue)
+
+> 它守的是**那种不会喊叫的失效**：链接指向的章节被改名了、标签写法前后不一致、
+> 文章被删了但引用还在。这些都不会让任何东西崩，只会让知识库慢慢烂掉。
+> `--check` 把它们变成一条非零退出码。
 
 ---
 
@@ -21,7 +25,18 @@ mdkg --posts ./content -f related -o related.json  # 相关文章
 
 图里有三种边：文章→标签、文章→分类，以及**文章→文章**（正文里写的链接，含 `[[wikilink]]`）。
 
-检查覆盖：正文断链（错误级）、无标签文章、只出现一次的标签、标签写法不一致、孤立节点、自引用。
+检查的重点是**那些不会喊叫的失效**：
+
+| 检查项 | 级别 | 典型场景 |
+|---|---|---|
+| **失效锚点** | 错误 | `[契约](design.md#api-contract)` —— 章节改名了，文件还在，链接已经死了 |
+| **正文断链** | 错误 | 引用的文件被删或路径写错 |
+| frontmatter 解析失败 | 错误 | YAML 语法错误 |
+| 无标签文章 / 只出现一次的标签 | 警告 | 长尾标签，靠分类或引用才连得上 |
+| 标签写法不一致 | 警告 | `PEFT` 与 `peft` 会被合并，确认不是笔误 |
+| 孤立节点 / 自引用 | 警告 | 图里的孤岛 |
+
+锚点校验按 GitHub 的 slug 规则（用 `github-slugger`，参考实现）。渲染器规则不同的站点用 `--no-anchor-check` 关掉。
 
 ## Quickstart
 
@@ -43,6 +58,7 @@ npm run example        # → examples/graph.json
 | `--min-tag-count <n>` | 标签出现次数低于 n 不入图 | `2` |
 | `--max-nodes <n>` | 节点数上限 | `200` |
 | `--no-link-edges` | 不生成正文引用边 | — |
+| `--no-anchor-check` | 不校验 `#锚点` 是否存在 | — |
 | `--post-url` / `--tag-url` / `--category-url` | URL 模板，如 `/posts/{id}/` | — |
 | `--check` / `--strict` | 只跑检查；`--strict` 让警告也算失败 | — |
 | `--related-top` / `--related-min-score` | 相关文章数量与阈值 | `5` / `1` |
@@ -106,12 +122,17 @@ graph LR
 
 ```
 $ mdkg --posts examples --check
-✗ 正文断链 —— 1 项
+✗ 正文断链（目标文件不存在） —— 1 项
     2026-01-08-qlora-4bit  →  ./2026-01-01-deleted-draft.md
+✗ 失效锚点（文件存在，但章节不存在） —— 2 项
+    2026-01-08-qlora-4bit  →  2026-01-15-inference-kvcache  #flash-attention
+    2026-01-08-qlora-4bit  →  （本文）  #不存在的小节
 ⚠ 只出现一次的标签 —— 5 项
 ⚠ 写法不一致的标签 —— 1 项     PEFT / peft  →  合并为「peft」，共 2 篇
-错误 1 · 警告 6  →  退出码 1
+错误 3 · 警告 6  →  退出码 1
 ```
+
+同样的语料里还有**有效**的锚点（`#kv-cache`、`#pagedattention`、`#react`）和代码块里的**假**锚点——两者都不会被报出来。这是刻意的：误报会让门禁被关掉。
 
 **相关文章** —— 带 `schemaVersion`，可直接给博客的「相关阅读」消费：
 
@@ -138,7 +159,11 @@ $ mdkg --posts examples --check
 | Hugo `.Related` / Jekyll 插件 | 框架内建 | 相关文章 | 只在那个框架里 |
 | [remark-wiki-link](https://www.npmjs.com/package/remark-wiki-link) | 库 | 解析 wikilink | 只解析 |
 
-**mdkg 的差异是"框架无关 + 源文件级 + 一次产出三种数据"**。它不跟 Obsidian 抢可视化，也不跟 lychee 抢全站链接爬取。
+**mdkg 的差异是：框架无关 + 读到锚点一级 + 一次产出三种数据。**
+
+"读到锚点一级"是它跟链接检查工具真正分开的地方——lychee 那一类验的是**链接能不能打开**，而这里验的是**引用还在不在**：文件在、章节改名了，它照样报错。规格文档最常见的失效正是这一类。
+
+它不跟 Obsidian 抢可视化，也不跟 lychee 抢全站链接爬取。
 
 ## 在 CI 里用它
 
@@ -160,9 +185,12 @@ $ mdkg --posts examples --check
 
 - 不做 `tag ↔ tag` 共现边（数量是标签数的平方级，语料一大图就糊）
 - 链接目标同名时**宁可判为断链**，也不猜一个
+- 锚点按 **GitHub 的 slug 规则**（`github-slugger`）；渲染器规则不同的站点请用 `--no-anchor-check`
+- 锚点不覆盖 HTML 里手写的 `<h2 id="...">`；Setext 标题（下划线式）支持
 - Mermaid 输出不适合超过约 100 个节点，那个规模用 `--format html`
 - 不提取正文里的实体或关键词；相关文章不做全局图算法（PageRank、社区发现）
 - 只检查本地语料内的引用，不发起网络请求验证外部链接
+- **依赖说清楚**：2 个直接依赖，安装后共 **11 个依赖包**。`github-slugger` 零传递依赖；`gray-matter` 带进 9 个传递依赖。选它是因为自研 frontmatter 解析会**静默丢数据**——见 [`docs/what-didnt-work.md`](./docs/what-didnt-work.md)
 
 ## License
 

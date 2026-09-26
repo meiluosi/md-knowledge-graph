@@ -37,9 +37,19 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 	add(
 		"broken-link",
 		"error",
-		"正文断链",
+		"正文断链（目标文件不存在）",
 		graph.links.broken.map((b) => `${b.from}  →  ${b.target}  (${b.kind})`),
 		"链接指向的文章在语料里找不到。检查路径拼写，或该文章是否已被删除。",
+	);
+
+	add(
+		"broken-anchor",
+		"error",
+		"失效锚点（文件存在，但章节不存在）",
+		graph.links.brokenAnchors.map(
+			(b) => `${b.from}  →  ${b.sameFile ? "（本文）" : b.to}  #${b.anchor}`,
+		),
+		"章节标题被改名或删除了。这是文档型语料最常见的失效——文件还在，链接已经死了。",
 	);
 
 	add(
