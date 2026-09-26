@@ -27,12 +27,16 @@ mdkg --posts ./content -f related -o related.json  # 相关文章
 |---|---|---|
 | **失效锚点** | 错误 | `[契约](design.md#api-contract)` —— 章节改名了，文件还在，链接已经死了 |
 | **正文断链** | 错误 | 引用的文件被删或路径写错 |
+| **本地文件系统路径** | 错误 | `![](C:\Users\me\Pictures\x.png)` —— 本机路径在网页上必然打不开 |
+| **图片文件不存在** | 错误 | 相对路径的图片已被删除或改名 |
 | frontmatter 解析失败 | 错误 | YAML 语法错误 |
 | 无标签 / 只出现一次的标签 | 警告 | 长尾标签，靠分类或引用才连得上 |
 | 标签写法不一致 | 警告 | `PEFT` 与 `peft` 会被合并，确认不是笔误 |
 | 孤立节点 / 自引用 | 警告 | 图里的孤岛 |
 
 锚点按 GitHub 的 slug 规则（`github-slugger`，参考实现）。渲染器规则不同就用 `--no-anchor-check` 关掉。
+
+图片只检查**相对路径**；外链与站点绝对路径（`/img/...`）默认不做判断——**判不了的事不能当成"缺失"**，那是误报。站点绝对路径可以用 `--asset-root public` 打开检查。
 
 ### 但它可能一开就红 —— 所以有基线
 
@@ -82,9 +86,12 @@ npm run example        # → examples/graph.json
 | `--min-tag-count <n>` | 标签出现次数低于 n 不入图 | `2` |
 | `--max-nodes <n>` | 节点数上限 | `200` |
 | `--no-link-edges` / `--no-anchor-check` | 关掉引用边 / 关掉锚点校验 | — |
+| `--asset-root <dir>` | 站点静态资源根目录，用于检查 `/img/...` 这类图片路径 | — |
 | `--post-url` / `--tag-url` / `--category-url` | URL 模板，如 `/posts/{id}/` | — |
 | `--check` / `--strict` | 只跑检查；`--strict` 让警告也算失败 | — |
-| `--baseline <file>` / `--update-baseline <file>` | 只挡新增 / 写出基线 | — |
+| `--baseline <file>` | 只对**新增**问题失败 | — |
+| `--update-baseline <file>` | 把当前全部问题写成基线（**会接受新问题**） | — |
+| `--prune-baseline <file>` | 只删除基线里已修好的条目，**绝不添加** | — |
 | `--related-top` / `--related-min-score` | 相关文章数量与阈值 | `5` / `1` |
 
 **退出码**：`0` 正常或检查无新增错误；`1` 参数/语料错误，或检查发现新增错误。
@@ -147,14 +154,20 @@ graph LR
 ```
 $ mdkg --posts examples --check
 ✗ 正文断链（目标文件不存在） —— 1 项
-    2026-01-08-qlora-4bit  →  ./2026-01-01-deleted-draft.md
+    2026-01-08-qlora-4bit:23  →  ./2026-01-01-deleted-draft.md
 ✗ 失效锚点（文件存在，但章节不存在） —— 2 项
-    2026-01-08-qlora-4bit  →  2026-01-15-inference-kvcache  #flash-attention
-    2026-01-08-qlora-4bit  →  （本文）  #不存在的小节
+    2026-01-08-qlora-4bit:30  →  2026-01-15-inference-kvcache  #flash-attention
+    2026-01-08-qlora-4bit:32  →  （本文）  #不存在的小节
+✗ 本地文件系统路径（在网页上必然打不开） —— 1 项
+    2026-01-22-rare-note:24  →  C:\Users\someone\Pictures\shot.png  (image)
+✗ 图片文件不存在 —— 1 项
+    2026-01-22-rare-note:28  →  ./assets/missing-diagram.png
 ⚠ 只出现一次的标签 —— 5 项
 ⚠ 写法不一致的标签 —— 1 项     PEFT / peft  →  合并为「peft」，共 2 篇
-错误 3 · 警告 6  →  退出码 1
+错误 5 · 警告 6  →  退出码 1
 ```
+
+每条都带**行号**——`file:line` 直接可点，GitHub 注解也是落在这一行上。
 
 同一份语料里还有**有效**锚点（`#kv-cache`、`#pagedattention`、`#react`）和代码块里的**假**锚点——两者都不会被报出来。这是刻意的：误报会让门禁被关掉。
 
@@ -251,6 +264,7 @@ repos:
 - 只检查本地语料内的引用，不发起网络请求验证外部链接
 - **依赖说清楚**：2 个直接依赖，安装后共 **11 个依赖包**。`github-slugger` 零传递依赖；`gray-matter` 带进 9 个传递依赖
 - 下一步往哪走、以及**明确不做什么**，见 [`docs/roadmap.md`](./docs/roadmap.md)
+- **一次真实语料验证的完整记录**（33 篇 / 19,673 行）见 [`docs/case-study.md`](./docs/case-study.md)
 
 ## License
 

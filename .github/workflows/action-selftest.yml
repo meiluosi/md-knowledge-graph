@@ -35,11 +35,11 @@ jobs:
           echo "outcome=${{ steps.check.outcome }} errors=${{ steps.check.outputs.errors }} warnings=${{ steps.check.outputs.warnings }}"
 
           if [ "${{ steps.check.outcome }}" != "failure" ]; then
-            echo "::error::示例语料含故意缺陷（1 断链 + 2 失效锚点），action 本应失败"
+            echo "::error::示例语料含故意缺陷（1 断链 + 2 失效锚点 + 1 本地路径 + 1 缺失图片），action 本应失败"
             exit 1
           fi
-          if [ "${{ steps.check.outputs.errors }}" != "3" ]; then
-            echo "::error::errors 输出应为 3，实际 ${{ steps.check.outputs.errors }}"
+          if [ "${{ steps.check.outputs.errors }}" != "5" ]; then
+            echo "::error::errors 输出应为 5，实际 ${{ steps.check.outputs.errors }}"
             exit 1
           fi
           if [ "${{ steps.check.outputs.warnings }}" != "6" ]; then
@@ -79,11 +79,11 @@ jobs:
             echo "::error::带基线时 errors 应为 0，实际 ${{ steps.check.outputs.errors }}"
             exit 1
           fi
-          if [ "${{ steps.check.outputs.known }}" != "9" ]; then
-            echo "::error::known 应为 9，实际 ${{ steps.check.outputs.known }}"
+          if [ "${{ steps.check.outputs.known }}" != "11" ]; then
+            echo "::error::known 应为 11，实际 ${{ steps.check.outputs.known }}"
             exit 1
           fi
-          echo "✓ 有基线：按预期通过，known=9"
+          echo "✓ 有基线：按预期通过，known=11"
 
   # --format github 是 action 依赖的底层能力，单独验证它的输出契约
   github-format:
@@ -105,8 +105,8 @@ jobs:
             const fs = require("fs");
             const lines = fs.readFileSync("/tmp/gh.txt", "utf8").trim().split("\n");
             const ann = lines.filter((l) => l.startsWith("::"));
-            if (ann.length !== 9) {
-              console.error("注解行数应为 9（3 错误 + 6 警告），实际 " + ann.length);
+            if (ann.length !== 11) {
+              console.error("注解行数应为 11（5 错误 + 6 警告），实际 " + ann.length);
               process.exit(1);
             }
             const re = /^::(error|warning)(?: (.*?))?::(.*)$/;

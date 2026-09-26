@@ -84,7 +84,7 @@ describe("scripts/action-report.mjs", () => {
 
 	it("写 GITHUB_OUTPUT 供后续步骤使用", async () => {
 		const r = await adapter(await makeReport());
-		assert.match(r.githubOutput, /errors=3/);
+		assert.match(r.githubOutput, /errors=5/);
 		assert.match(r.githubOutput, /warnings=6/);
 		assert.match(r.githubOutput, /known=0/);
 	});
@@ -96,7 +96,7 @@ describe("scripts/action-report.mjs", () => {
 
 		assert.match(r.githubOutput, /errors=0/);
 		assert.match(r.githubOutput, /warnings=0/);
-		assert.match(r.githubOutput, /known=9/);
+		assert.match(r.githubOutput, /known=11/);
 		assert.ok(!r.stdout.includes("::error"), "已知问题不该出现在注解里");
 	});
 

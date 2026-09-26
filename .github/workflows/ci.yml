@@ -180,6 +180,99 @@ jobs:
           node src/cli.js --posts examples --check --format mermaid 2>/dev/null && { echo "✗ 检查模式接受了出图 format"; exit 1; }
           echo "✓ 参数校验符合预期"
 
+      - name: 行号必须与文件实际内容一致（错的行号比没有更糟）
+        run: |
+          node src/cli.js --posts examples --check --format json --compact > /tmp/lines.json 2>/dev/null || true
+          node -e '
+            const fs = require("fs");
+            const r = require("/tmp/lines.json");
+            let checked = 0;
+            for (const g of r.groups) {
+              for (const it of g.items) {
+                if (!it.file || !it.line) continue;
+                const lines = fs.readFileSync(it.file, "utf8").split("\n");
+                const text = lines[it.line - 1] ?? "";
+                const needle = String(it.target || "").split("#").pop();
+                if (!text.includes(needle)) {
+                  console.error(`行号不对：${it.file}:${it.line} 不含 ${needle}\n    该行实际内容：${text.trim()}`);
+                  process.exit(1);
+                }
+                checked++;
+              }
+            }
+            if (checked < 4) { console.error("核对条目太少：" + checked); process.exit(1); }
+            console.log(`✓ ${checked} 条位置全部与文件实际内容一致`);
+          '
+
+      - name: 本地文件路径必须被识别（曾被当成 URL 协议而漏报）
+        run: |
+          mkdir -p /tmp/winpath
+          cat > /tmp/winpath/a.md <<'EOF'
+          ---
+          title: A
+          tags: [x, y]
+          category: C
+          ---
+          ![图](C:\Users\me\Pictures\shot.png)
+          EOF
+          node src/cli.js --posts /tmp/winpath --check > /tmp/win.txt 2>&1 && {
+            echo "::error::Windows 本地路径未被识别为问题"; cat /tmp/win.txt; exit 1;
+          }
+          grep -q "本地文件系统路径" /tmp/win.txt || { echo "::error::未报 local-file-path"; cat /tmp/win.txt; exit 1; }
+          grep -q "shot.png" /tmp/win.txt || { echo "::error::未点名该路径"; exit 1; }
+          # 不能同时被算成断链
+          if grep -q "正文断链" /tmp/win.txt; then
+            echo "::error::本地路径被重复归类为断链"; exit 1
+          fi
+          echo "✓ Windows 本地路径被正确识别"
+
+      - name: 图片存在性检查与 --asset-root
+        run: |
+          set -eu
+          mkdir -p /tmp/imgcorpus /tmp/imgassets/img
+          printf -- '---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n![有](./here.png)\n![没有](./gone.png)\n![站点图](/img/site.png)\n' > /tmp/imgcorpus/a.md
+          printf 'x' > /tmp/imgcorpus/here.png
+
+          # 默认：只检查相对路径 → 只报 gone.png
+          node src/cli.js --posts /tmp/imgcorpus --check > /tmp/img.txt 2>&1 || true
+          grep -q "gone.png" /tmp/img.txt || { echo "::error::未报出缺失的相对路径图片"; cat /tmp/img.txt; exit 1; }
+          if grep -q "here.png" /tmp/img.txt; then echo "::error::存在的图片被误报"; exit 1; fi
+          if grep -q "site.png" /tmp/img.txt; then echo "::error::站点绝对路径默认不该判断（会误报）"; exit 1; fi
+
+          # 给了 asset-root：站点绝对路径进入检查
+          node src/cli.js --posts /tmp/imgcorpus --check --asset-root /tmp/imgassets > /tmp/img2.txt 2>&1 || true
+          grep -q "site.png" /tmp/img2.txt || { echo "::error::--asset-root 未生效"; cat /tmp/img2.txt; exit 1; }
+
+          # 把文件放进去就不该再报
+          printf 'x' > /tmp/imgassets/img/site.png
+          node src/cli.js --posts /tmp/imgcorpus --check --asset-root /tmp/imgassets > /tmp/img3.txt 2>&1 || true
+          if grep -q "site.png" /tmp/img3.txt; then echo "::error::文件存在却仍报缺失"; exit 1; fi
+          echo "✓ 图片检查：相对路径默认查、站点路径需 --asset-root、不误报"
+
+      - name: prune-baseline 只删不加
+        run: |
+          set -eu
+          rm -rf /tmp/prunecorpus && mkdir -p /tmp/prunecorpus
+          printf -- '---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n[没了](./gone.md)\n' > /tmp/prunecorpus/a.md
+          printf -- '---\ntitle: B\ntags: [x, y]\ncategory: C\n---\n[B](./a.md)\n' > /tmp/prunecorpus/b.md
+          node src/cli.js --posts /tmp/prunecorpus --update-baseline /tmp/prune.json
+
+          # 出现新问题 → prune 不得接受它
+          printf -- '---\ntitle: C\ntags: [x, y]\ncategory: C\n---\n[新的](./nope.md)\n' > /tmp/prunecorpus/c.md
+          node src/cli.js --posts /tmp/prunecorpus --prune-baseline /tmp/prune.json > /tmp/prune-out.txt
+          grep -q "基线无变化" /tmp/prune-out.txt || { echo "::error::prune 不应因新问题而改动基线"; cat /tmp/prune-out.txt; exit 1; }
+          if node -e 'process.exit(require("/tmp/prune.json").issues.some(i=>i.key.includes("nope.md"))?0:1)'; then
+            echo "::error::prune 把新问题当成了已知！"; exit 1
+          fi
+
+          # 修好旧问题 → prune 应当移除它
+          rm /tmp/prunecorpus/c.md
+          printf -- '---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n已修好\n' > /tmp/prunecorpus/a.md
+          node src/cli.js --posts /tmp/prunecorpus --prune-baseline /tmp/prune.json > /tmp/prune-out2.txt
+          grep -q "移除 1 项" /tmp/prune-out2.txt || { echo "::error::修好的条目未被清理"; cat /tmp/prune-out2.txt; exit 1; }
+          grep -q "未添加任何新问题" /tmp/prune-out2.txt || { echo "::error::缺少说明"; exit 1; }
+          echo "✓ prune 只删不加"
+
       - name: 自定义 URL 模板与 --no-link-edges 可用
         run: |
           node src/cli.js --posts examples --no-link-edges --format json --out /tmp/nolink.json

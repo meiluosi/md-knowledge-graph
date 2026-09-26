@@ -205,6 +205,23 @@ describe("mdkg 的锚点校验", () => {
 		assert.ok(r.stdout.includes("不存在的小节"));
 	});
 
+	it("示例语料报出本地路径与缺失图片", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--check"]);
+		assert.ok(r.stdout.includes("本地文件系统路径"));
+		assert.ok(r.stdout.includes("shot.png"));
+		assert.ok(r.stdout.includes("图片文件不存在"));
+		assert.ok(r.stdout.includes("missing-diagram.png"));
+	});
+
+	it("本地路径带正确的行列号", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--check", "--format", "json"]);
+		const report = JSON.parse(r.stdout);
+		const group = report.groups.find((g) => g.code === "local-file-path");
+		assert.ok(group, "应有 local-file-path 组");
+		assert.equal(group.items[0].line, 24);
+		assert.ok(Number.isInteger(group.items[0].column));
+	});
+
 	it("代码块里的假锚点不会被误报", async () => {
 		const dir = await corpus({
 			"a.md":
@@ -286,7 +303,81 @@ describe("mdkg 的基线机制", () => {
 			"--posts", EXAMPLES, "--check", "--baseline", "/tmp/x.json", "--update-baseline", "/tmp/y.json",
 		]);
 		assert.equal(r.code, 1);
+		assert.ok(r.stderr.includes("只读"));
+	});
+
+	it("--update-baseline 与 --prune-baseline 互斥（危险程度不同）", async () => {
+		const r = await mdkg([
+			"--posts", EXAMPLES, "--update-baseline", "/tmp/x.json", "--prune-baseline", "/tmp/y.json",
+		]);
+		assert.equal(r.code, 1);
 		assert.ok(r.stderr.includes("不能同时使用"));
+		assert.ok(r.stderr.includes("--update-baseline"), "错误信息应说明两者的区别");
+	});
+
+	it("--prune-baseline 在文件不存在时报错（它只删不建）", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--prune-baseline", "/tmp/no-such-baseline.json"]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stderr.includes("不存在"));
+		assert.ok(r.stderr.includes("--update-baseline"), "应提示用 update 创建");
+	});
+});
+
+describe("mdkg 的基线清理（--prune-baseline）", () => {
+	async function fixture() {
+		const dir = await corpus({
+			"a.md": "---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n[没了](./gone.md)\n",
+			"b.md": "---\ntitle: B\ntags: [x, y]\ncategory: C\n---\n[好](./a.md)\n",
+		});
+		const work = await fs.mkdtemp(path.join(os.tmpdir(), "mdkg-prune-"));
+		const baseline = path.join(work, "baseline.json");
+		await mdkg(["--posts", dir, "--update-baseline", baseline]);
+		return { dir, baseline };
+	}
+
+	it("无变化时不改动文件", async () => {
+		const { dir, baseline } = await fixture();
+		const before = await fs.readFile(baseline, "utf8");
+		const r = await mdkg(["--posts", dir, "--prune-baseline", baseline]);
+		assert.equal(r.code, 0);
+		assert.ok(r.stdout.includes("基线无变化"));
+		assert.equal(await fs.readFile(baseline, "utf8"), before);
+	});
+
+	it("修好后清理，并列出被移除的条目", async () => {
+		const { dir, baseline } = await fixture();
+		await fs.writeFile(
+			path.join(dir, "a.md"),
+			"---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n链接已修好\n",
+			"utf8",
+		);
+		const r = await mdkg(["--posts", dir, "--prune-baseline", baseline]);
+		assert.equal(r.code, 0);
+		assert.ok(r.stdout.includes("移除 1 项"));
+		assert.ok(r.stdout.includes("未添加任何新问题"));
+		assert.ok(r.stdout.includes("broken-link|a|./gone.md"));
+
+		const written = JSON.parse(await fs.readFile(baseline, "utf8"));
+		assert.equal(written.count, 0);
+	});
+
+	it("清理后新问题仍然会被 --check 报出", async () => {
+		const { dir, baseline } = await fixture();
+		await fs.writeFile(
+			path.join(dir, "a.md"),
+			"---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n链接已修好\n",
+			"utf8",
+		);
+		await mdkg(["--posts", dir, "--prune-baseline", baseline]);
+
+		await fs.writeFile(
+			path.join(dir, "c.md"),
+			"---\ntitle: C\ntags: [x, y]\ncategory: C\n---\n[新的坏链](./nope.md)\n",
+			"utf8",
+		);
+		const r = await mdkg(["--posts", dir, "--check", "--baseline", baseline]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stdout.includes("nope.md"));
 	});
 });
 

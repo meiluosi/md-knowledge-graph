@@ -1,7 +1,7 @@
 {
   "name": "md-knowledge-graph",
-  "version": "0.5.0",
-  "description": "从 markdown 的 frontmatter 与正文链接构建知识图谱，并检查知识库（断链 / 失效锚点 / 标签写法不一致），输出 JSON、Mermaid、自包含 HTML 或相关文章数据",
+  "version": "0.6.0",
+  "description": "检查 markdown 知识库：失效锚点/断链/本地路径/缺失图片/标签一致性 · 支持基线只挡新增 · 附 GitHub Action 与 pre-commit · 也可出图谱与相关文章数据",
   "type": "module",
   "license": "MIT",
   "author": "枫语 (Feng Yu)",
@@ -14,6 +14,8 @@
     "anchor",
     "lint",
     "related-posts",
+    "broken-links",
+    "broken-images",
     "cli"
   ],
   "engines": {

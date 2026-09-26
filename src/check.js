@@ -60,6 +60,9 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 	/** 文章 id → 源文件路径，供 CI 注解定位文件 */
 	const fileOf = new Map(posts.map((p) => [p.id, p.file ?? ""]));
 
+	/** 渲染成 `id:line` 形式；没有行号时退回纯 id */
+	const at = (id, line) => (line ? `${id}:${line}` : id);
+
 	/** @type {Array<{code: string, severity: "error"|"warn", title: string, hint?: string, items: Array<Record<string, unknown> & {key: string, message: string}>}>} */
 	const groups = [];
 
@@ -76,11 +79,14 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 		"正文断链（目标文件不存在）",
 		graph.links.broken.map((b) => ({
 			key: `broken-link|${b.from}|${b.target}`,
-			message: `${b.from}  →  ${b.target}  (${b.kind})`,
+			// 位置写进 message：文本、JSON、GitHub 注解三处一致可读
+			message: `${at(b.from, b.line)}  →  ${b.target}  (${b.kind})`,
 			from: b.from,
 			target: b.target,
 			kind: b.kind,
 			file: fileOf.get(b.from) ?? "",
+			line: b.line,
+			column: b.column,
 		})),
 		"链接指向的文章在语料里找不到。检查路径拼写，或该文章是否已被删除。",
 	);
@@ -91,14 +97,49 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 		"失效锚点（文件存在，但章节不存在）",
 		graph.links.brokenAnchors.map((b) => ({
 			key: `broken-anchor|${b.from}|${b.to}|${b.anchor}`,
-			message: `${b.from}  →  ${b.sameFile ? "（本文）" : b.to}  #${b.anchor}`,
+			message: `${at(b.from, b.line)}  →  ${b.sameFile ? "（本文）" : b.to}  #${b.anchor}`,
 			from: b.from,
 			to: b.to,
 			anchor: b.anchor,
 			sameFile: b.sameFile,
 			file: fileOf.get(b.from) ?? "",
+			line: b.line,
+			column: b.column,
 		})),
 		"章节标题被改名或删除了。这是文档型语料最常见的失效——文件还在，链接已经死了。",
+	);
+
+	add(
+		"local-file-path",
+		"error",
+		"本地文件系统路径（在网页上必然打不开）",
+		graph.links.localPaths.map((p) => ({
+			key: `local-file-path|${p.from}|${p.target}`,
+			message: `${at(p.from, p.line)}  →  ${p.target}  (${p.kind})`,
+			from: p.from,
+			target: p.target,
+			kind: p.kind,
+			file: fileOf.get(p.from) ?? "",
+			line: p.line,
+			column: p.column,
+		})),
+		"写成了 C:\\... 这样的本机路径。资源需要上传到站点目录并改成站内路径。",
+	);
+
+	add(
+		"broken-image",
+		"error",
+		"图片文件不存在",
+		graph.links.brokenImages.map((p) => ({
+			key: `broken-image|${p.from}|${p.target}`,
+			message: `${at(p.from, p.line)}  →  ${p.target}`,
+			from: p.from,
+			target: p.target,
+			file: fileOf.get(p.from) ?? "",
+			line: p.line,
+			column: p.column,
+		})),
+		"只检查相对路径的图片。外链与站点绝对路径不做判断——后者可以用 --asset-root 指定静态资源根目录。",
 	);
 
 	add(
@@ -210,10 +251,12 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 		"文章引用了自己",
 		graph.links.selfLinks.map((s) => ({
 			key: `self-link|${s.from}|${s.target}`,
-			message: `${s.from}  →  ${s.target}`,
+			message: `${at(s.from, s.line)}  →  ${s.target}`,
 			from: s.from,
 			target: s.target,
 			file: fileOf.get(s.from) ?? "",
+			line: s.line,
+			column: s.column,
 		})),
 	);
 
@@ -295,12 +338,12 @@ export function formatReport(result, options = {}) {
 /**
  * 输出 GitHub Actions 注解（workflow commands）。
  *
- * 这是「被集成」的关键：注解会直接挂在 PR 的 Files changed 里对应的文件上，
+ * 这是「被集成」的关键：注解会直接挂在 PR 的 Files changed 里对应的**文件与行**上，
  * 不需要人去翻 CI 日志。而且它只是 stdout 上的普通文本，
  * 所以在**任何** workflow 里都能用，不限于本仓库提供的 action。
  *
- * 已知限制：只定位到**文件**，没有行号。行号需要在剥离代码块前后
- * 维持偏移映射，代价不小；而错的准行号比没有行号更糟，所以先不做。
+ * 行列号的来源：`maskCode` 用等长空白遮蔽代码区域，偏移量因此与原文一一对应，
+ * 可以直接换算成行列（见 text.js）。若某条目没有位置信息，则只定位到文件。
  *
  * @param {ReturnType<typeof runChecks>} result
  * @param {object} [options]
@@ -319,6 +362,11 @@ export function formatGithubAnnotations(result, options = {}) {
 			const rel = path.isAbsolute(item.file) ? path.relative(cwd, item.file) : item.file;
 			// 相对路径逃出仓库（或为空）时不报文件，避免指向奇怪的位置
 			if (rel && !rel.startsWith("..")) props.push(`file=${escapeProperty(rel)}`);
+		}
+		// 只有定位到文件时，行列号才有意义
+		if (props.length > 0) {
+			if (Number.isInteger(item.line) && item.line > 0) props.push(`line=${item.line}`);
+			if (Number.isInteger(item.column) && item.column > 0) props.push(`col=${item.column}`);
 		}
 		props.push(`title=${escapeProperty(group.title)}`);
 

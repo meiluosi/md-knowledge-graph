@@ -112,6 +112,16 @@ export async function readCorpus(dir) {
 			continue;
 		}
 
+		// 正文行号 → 文件行号的偏移量。
+		//
+		// gray-matter 会剥掉 frontmatter，于是正文里的第 1 行在文件里并不是第 1 行。
+		// 不做这个换算，报出来的行号会整体偏掉 frontmatter 的行数——
+		// 而**错的行号比没有行号更糟**：它让人去改一个没问题的位置。
+		//
+		// 这里用「正文是原文的后缀」这个性质来定位，而不是用正则去匹配
+		// frontmatter 分隔符——后者要处理各种边界，且容易与实际剥离行为不一致。
+		const lineOffset = lineCountBefore(raw, content ?? "");
+
 		posts.push({
 			id: rel.replace(/\.mdx?$/i, ""),
 			title,
@@ -119,10 +129,33 @@ export async function readCorpus(dir) {
 			category: typeof data.category === "string" ? data.category.trim() : "",
 			file,
 			content: content ?? "",
+			lineOffset,
 		});
 	}
 
 	return { posts, skipped };
+}
+
+/**
+ * 算出 `body` 之前的换行数（即 body 在原文中的行偏移）。
+ *
+ * 依赖「body 是 raw 的后缀」这一性质；若不是（例如解析器做了别的裁剪），
+ * 退回到按 frontmatter 分隔符计数，宁可保守也不要给出错的偏移。
+ *
+ * @param {string} raw 原始文件内容
+ * @param {string} body gray-matter 返回的正文
+ * @returns {number}
+ */
+function lineCountBefore(raw, body) {
+	const countNewlines = (s) => (s.match(/\n/g) ?? []).length;
+
+	if (body.length > 0 && raw.endsWith(body)) {
+		return countNewlines(raw.slice(0, raw.length - body.length));
+	}
+
+	// 后备：按 frontmatter 分隔符计数
+	const m = raw.match(/^(---)\r?\n[\s\S]*?\r?\n\1[ \t]*\r?\n/);
+	return m ? countNewlines(m[0]) : 0;
 }
 
 /**
@@ -218,6 +251,7 @@ export function buildGraph(posts, options = {}) {
 		maxNodes = 200,
 		linkEdges = true,
 		anchorCheck = true,
+		assetRoot = null,
 		postUrl,
 		tagUrl,
 		categoryUrl,
@@ -232,9 +266,13 @@ export function buildGraph(posts, options = {}) {
 			? template.replace(/\{(\w+)\}/g, (_, k) => (k === "id" || k === "slug" ? value : ""))
 			: undefined;
 
-	const links = linkEdges
-		? resolvePostLinks(posts, { anchorCheck })
-		: { edges: [], broken: [], brokenAnchors: [], selfLinks: [], total: 0 };
+	/*
+	 * 引用解析与「是否生成图边」是两件事：
+	 * `--no-link-edges` 只是不进图，断链 / 坏锚点 / 本地路径 / 坏图片仍然要检查。
+	 * 所以这里始终做完整解析，只在构图时决定要不要用 edges。
+	 */
+	const links = resolvePostLinks(posts, { anchorCheck, assetRoot });
+	const graphLinkEdges = linkEdges ? links.edges : [];
 
 	const nodes = [];
 	const categoryIds = new Set();
@@ -255,8 +293,8 @@ export function buildGraph(posts, options = {}) {
 	}
 
 	// 只有被链接指向、或链接出去的文章 id 集合，用于判断文章节点是否有边
-	const linkedFrom = new Set(links.edges.map((e) => e.from));
-	const linkedTo = new Set(links.edges.map((e) => e.to));
+	const linkedFrom = new Set(graphLinkEdges.map((e) => e.from));
+	const linkedTo = new Set(graphLinkEdges.map((e) => e.to));
 
 	for (const post of posts) {
 		const hasEdge =
@@ -291,7 +329,7 @@ export function buildGraph(posts, options = {}) {
 
 	// post ↔ post 引用边
 	let linkEdgeCount = 0;
-	for (const { from, to } of links.edges) {
+	for (const { from, to } of graphLinkEdges) {
 		const s = `post:${from}`;
 		const t = `post:${to}`;
 		if (!postIds.has(s) || !postIds.has(t)) continue;
@@ -309,6 +347,9 @@ export function buildGraph(posts, options = {}) {
 		linksFound: links.total,
 		brokenLinks: links.broken.length,
 		brokenAnchors: links.brokenAnchors.length,
+		localPaths: links.localPaths.length,
+		imagesFound: links.imagesFound,
+		brokenImages: links.brokenImages.length,
 		truncated: false,
 	};
 

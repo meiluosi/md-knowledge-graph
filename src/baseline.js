@@ -23,6 +23,19 @@ export const BASELINE_SCHEMA_VERSION = 1;
 export const DEFAULT_BASELINE_NAME = ".mdkg-baseline.json";
 
 /**
+ * 收集一次检查结果里全部问题的 key。
+ * @param {ReturnType<import("./check.js").runChecks>} result
+ * @returns {Set<string>}
+ */
+export function collectKeys(result) {
+	const keys = new Set();
+	for (const group of result.groups) {
+		for (const item of group.items) keys.add(item.key);
+	}
+	return keys;
+}
+
+/**
  * 从检查结果生成一份基线。
  *
  * 条目按 key 排序，保证「内容没变 → 文件也没变」，不会产生无意义的 diff。
@@ -54,6 +67,48 @@ export function buildBaseline(result, options = {}) {
 		generatedBy: options.version ? `md-knowledge-graph@${options.version}` : undefined,
 		count: issues.length,
 		issues,
+	};
+}
+
+/**
+ * 只删除「已不再出现」的条目，**绝不添加新的**。
+ *
+ * 与 updateBaseline 的区别很重要，两者危险程度完全不同：
+ *
+ * | | 会添加新问题吗 | 语义 |
+ * |---|---|---|
+ * | `--update-baseline` | **会** | 「把所有现存问题都接受为已知」 |
+ * | `--prune-baseline`  | **不会** | 「忘掉已经修好的，但绝不放过新的」 |
+ *
+ * 前者方便（一次接住全部历史债），但跑在不该跑的时候会**静默接受新引入的问题**。
+ * 后者是日常维护动作：修好一批就清理一批，安全性不依赖于"你记得它只在什么时候跑"。
+ *
+ * @param {object} baseline 现有基线
+ * @param {Set<string>} currentKeys 当前仍然存在的问题 key
+ * @param {object} [options]
+ * @param {string} [options.version]
+ * @param {string} [options.generatedAt]
+ * @returns {{baseline: object, removed: Array<{key: string}>, changed: boolean}}
+ */
+export function pruneBaseline(baseline, currentKeys, options = {}) {
+	const kept = baseline.issues.filter((i) => currentKeys.has(i.key));
+	const removed = baseline.issues.filter((i) => !currentKeys.has(i.key));
+
+	if (removed.length === 0) {
+		// 没有变化就不要重写文件，免得每次跑都产生无意义的 diff
+		return { baseline, removed, changed: false };
+	}
+
+	return {
+		baseline: {
+			...baseline,
+			generatedAt: options.generatedAt ?? new Date().toISOString(),
+			generatedBy: options.version ? `md-knowledge-graph@${options.version}` : baseline.generatedBy,
+			count: kept.length,
+			issues: kept,
+		},
+		removed,
+		changed: true,
 	};
 }
 

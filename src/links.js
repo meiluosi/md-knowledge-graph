@@ -12,21 +12,55 @@
  * @module links
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { buildAnchorIndex, hasAnchor } from "./anchors.js";
-import { stripCode } from "./text.js";
+import { maskCode, offsetToPosition } from "./text.js";
 
-export { stripCode };
+/**
+ * 判断一个引用目标是不是**本地文件系统路径**。
+ *
+ * 两类：Windows 盘符（`C:\...` / `C:/...`）与 UNC（`\\server\share`）。
+ *
+ * 为什么必须单独判：`C:` 会被 URL 协议的正则匹配上，于是 `C:\Users\...\a.png`
+ * 会被当成"外链"跳过——**而它在网页上必然 404**。
+ * 这个 bug 是在真实语料上跑出来的：19 个引用的漏报。
+ *
+ * @param {string} target
+ * @returns {boolean}
+ */
+export function isLocalFilePath(target) {
+	const t = String(target ?? "");
+	return /^[a-zA-Z]:[\\/]/.test(t) || t.startsWith("\\\\");
+}
+
+/**
+ * 判断链接目标是否为外部链接（不参与图谱）。
+ *
+ * 注意顺序：本地文件路径要先判掉。按 RFC 3986，真正的 URI scheme 至少两个字符，
+ * 所以单字母 + 冒号只可能是盘符。
+ *
+ * @param {string} target
+ * @returns {boolean}
+ */
+export function isExternal(target) {
+	const t = String(target ?? "");
+	if (isLocalFilePath(t)) return false;
+	return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t) || t.startsWith("//");
+}
 
 /**
  * 从正文中提取所有链接。
  *
+ * `offset` 是**原文**中的字符偏移——因为 maskCode 是等长遮蔽，
+ * 遮蔽后匹配到的下标可以直接用于原文，从而还原行列号。
+ *
  * @param {string} content 正文（不含 frontmatter）
- * @returns {Array<{kind: "markdown"|"wikilink", target: string, text: string, offset: number}>}
+ * @returns {Array<{kind: "markdown"|"wikilink"|"image", target: string, text: string, offset: number}>}
  */
 export function extractLinks(content) {
 	if (!content) return [];
-	const source = stripCode(content);
+	const source = maskCode(content);
 	/** @type {Array<{kind: "markdown"|"wikilink", target: string, text: string, offset: number}>} */
 	const found = [];
 
@@ -40,11 +74,10 @@ export function extractLinks(content) {
 		});
 	}
 
-	// markdown 链接：跳过图片（前面是 !），跳过已处理的 wikilink
+	// markdown 链接：图片（! 前缀）单独成类，其余算引用
 	for (const m of source.matchAll(/(!?)\[([^\]]*)\]\(([^)\s]*)(?:\s+"[^"]*")?\)/g)) {
-		if (m[1] === "!") continue; // 图片，不是引用
 		found.push({
-			kind: "markdown",
+			kind: m[1] === "!" ? "image" : "markdown",
 			target: m[3].trim(),
 			text: m[2].trim(),
 			offset: m.index ?? 0,
@@ -52,15 +85,6 @@ export function extractLinks(content) {
 	}
 
 	return found;
-}
-
-/**
- * 判断链接目标是否为外部链接（不参与图谱）。
- * @param {string} target
- * @returns {boolean}
- */
-export function isExternal(target) {
-	return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target) || target.startsWith("//");
 }
 
 /** 安全地做百分号解码（中文路径很常见） */
@@ -199,27 +223,59 @@ export function resolveLink(rawTarget, from, index) {
 }
 
 /**
- * 解析全部文章的链接，分成「已连上的边」「断链」「坏锚点」。
+ * 检查一个图片引用是否指向真实存在的文件。
  *
- * 三种问题分开归类，因为它们的**修复动作不同**：
- *   断链   → 文件没了或路径写错
- *   坏锚点 → 文件在，但章节被改名了（文档型语料最常见的失效）
- *   自引用 → 可能是笔误，也可能是有意的
+ * 三种结果：
+ *   ok        —— 文件在
+ *   missing   —— 文件不在（要报出来）
+ *   unchecked —— 无法判断（外链、data URI、或站点绝对路径但没给 --asset-root）
  *
- * @param {Array<{id: string, title: string, content?: string}>} posts
+ * 「无法判断」必须与「缺失」区分开：把判不了的说成缺失，
+ * 就是误报，而误报会让门禁被关掉。
+ *
+ * @param {string} rawTarget
+ * @param {{file?: string}} post
+ * @param {string|null} assetRoot 站点静态资源根目录（用于解析 `/img/...` 这类路径）
+ * @returns {"ok"|"missing"|"unchecked"}
+ */
+function checkImageTarget(rawTarget, post, assetRoot) {
+	const target = safeDecode(String(rawTarget ?? "").split("#")[0].split("?")[0]).trim();
+	if (!target) return "unchecked";
+	if (/^data:/i.test(target)) return "unchecked";
+	if (isExternal(target)) return "unchecked";
+
+	const normalized = target.replace(/\\/g, "/");
+
+	// 站点绝对路径：/img/x.png → <assetRoot>/img/x.png
+	if (normalized.startsWith("/")) {
+		if (!assetRoot) return "unchecked";
+		return fs.existsSync(path.join(assetRoot, normalized)) ? "ok" : "missing";
+	}
+
+	// 相对路径：相对于该 markdown 文件所在目录
+	if (!post.file) return "unchecked";
+	return fs.existsSync(path.join(path.dirname(post.file), normalized)) ? "ok" : "missing";
+}
+
+/**
+ * 解析全部文章的链接，分成「已连上的边」「断链」「坏锚点」「本地路径」「坏图片」。
+ *
+ * 五种问题分开归类，因为**修复动作不同**：
+ *   断链     → 文件没了或路径写错
+ *   坏锚点   → 文件在，但章节被改名了（文档型语料最常见的失效）
+ *   本地路径 → 写成了 C:\... ，在网页上必然 404（要上传资源 / 改路径）
+ *   坏图片   → 图片文件不在（相对路径才可判；外链与未给 assetRoot 的站点路径不做判断）
+ *   自引用   → 可能是笔误，也可能是有意的
+ *
+ * @param {Array<{id: string, title: string, content?: string, file?: string, lineOffset?: number}>} posts
  * @param {object} [options]
  * @param {Map<string, Set<string>>} [options.anchorIndex] 复用已有的锚点索引，省一次遍历
  * @param {boolean} [options.anchorCheck=true] 是否校验锚点
- * @returns {{
- *   edges: Array<{from: string, to: string}>,
- *   broken: Array<{from: string, target: string, kind: string}>,
- *   brokenAnchors: Array<{from: string, to: string, anchor: string, target: string, sameFile: boolean}>,
- *   selfLinks: Array<{from: string, target: string}>,
- *   total: number,
- * }}
+ * @param {string|null} [options.assetRoot=null] 站点静态资源根目录
+ * @returns {object}
  */
 export function resolvePostLinks(posts, options = {}) {
-	const { anchorCheck = true } = options;
+	const { anchorCheck = true, assetRoot = null } = options;
 	const index = buildLinkIndex(posts);
 	const anchorIndex = options.anchorIndex ?? (anchorCheck ? buildAnchorIndex(posts) : null);
 
@@ -227,17 +283,65 @@ export function resolvePostLinks(posts, options = {}) {
 	const broken = [];
 	const brokenAnchors = [];
 	const selfLinks = [];
+	const localPaths = [];
+	const brokenImages = [];
 	const seen = new Set();
 	let total = 0;
+	let imagesFound = 0;
 
 	for (const post of posts) {
-		for (const link of extractLinks(post.content ?? "")) {
+		const content = post.content ?? "";
+		// 换算成**文件行号**：正文第 1 行前面还有 frontmatter
+		const lineOffset = post.lineOffset ?? 0;
+		const at = (offset) => {
+			const pos = offsetToPosition(content, offset);
+			return { line: pos.line + lineOffset, column: pos.column };
+		};
+
+		for (const link of extractLinks(content)) {
+			const pos = at(link.offset);
+
+			// 本地文件系统路径：必然 404，单独归类（修复动作与"断链"不同）
+			if (isLocalFilePath(link.target)) {
+				localPaths.push({
+					from: post.id,
+					target: link.target,
+					kind: link.kind,
+					offset: link.offset,
+					...pos,
+				});
+				continue;
+			}
+
 			if (isExternal(link.target)) continue;
+
+			// 图片不进图，只检查存在性
+			if (link.kind === "image") {
+				// imagesFound 的口径：**内部**图片引用数（外链与本地路径不计入），
+				// 也就是"本工具尝试去看的图片"
+				imagesFound += 1;
+				if (checkImageTarget(link.target, post, assetRoot) === "missing") {
+					brokenImages.push({
+						from: post.id,
+						target: link.target,
+						offset: link.offset,
+						...pos,
+					});
+				}
+				continue;
+			}
+
 			total += 1;
 
 			const resolved = resolveLink(link.target, post, index);
 			if (!resolved) {
-				broken.push({ from: post.id, target: link.target, kind: link.kind });
+				broken.push({
+					from: post.id,
+					target: link.target,
+					kind: link.kind,
+					offset: link.offset,
+					...pos,
+				});
 				continue;
 			}
 
@@ -248,6 +352,8 @@ export function resolvePostLinks(posts, options = {}) {
 					anchor: resolved.anchor,
 					target: link.target,
 					sameFile: resolved.sameFile,
+					offset: link.offset,
+					...pos,
 				});
 			}
 
@@ -255,7 +361,12 @@ export function resolvePostLinks(posts, options = {}) {
 			if (resolved.sameFile) continue;
 
 			if (resolved.id === post.id) {
-				selfLinks.push({ from: post.id, target: link.target });
+				selfLinks.push({
+					from: post.id,
+					target: link.target,
+					offset: link.offset,
+					...pos,
+				});
 				continue;
 			}
 
@@ -266,5 +377,5 @@ export function resolvePostLinks(posts, options = {}) {
 		}
 	}
 
-	return { edges, broken, brokenAnchors, selfLinks, total };
+	return { edges, broken, brokenAnchors, selfLinks, localPaths, brokenImages, total, imagesFound };
 }

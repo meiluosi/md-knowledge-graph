@@ -15,7 +15,9 @@ import { parseArgs } from "node:util";
 import {
 	applyBaseline,
 	buildBaseline,
+	collectKeys,
 	parseBaseline,
+	pruneBaseline,
 	serializeBaseline,
 } from "./baseline.js";
 import { formatGithubAnnotations, formatReport, runChecks, toJsonReport } from "./check.js";
@@ -44,6 +46,8 @@ mdkg —— 从 markdown 构建知识图谱，并检查知识库
       --max-nodes <n>       节点数上限（默认 200）
       --no-link-edges       不生成正文引用边（post↔post）
       --no-anchor-check     不校验 #锚点 是否存在
+      --asset-root <dir>    站点静态资源根目录，用于检查 /img/... 这类图片路径
+                            （不给则只检查相对路径的图片，避免误报）
       --post-url <tpl>      文章 URL 模板，如 /posts/{id}/
       --tag-url <tpl>       标签 URL 模板，如 /tags/{slug}/
       --category-url <tpl>  分类 URL 模板，如 /categories/{slug}/
@@ -57,7 +61,10 @@ mdkg —— 从 markdown 构建知识图谱，并检查知识库
       --strict              连警告也算失败（需与 --check 同用）
       --baseline <file>     忽略基线里已记录的问题，只对**新增**问题失败
       --update-baseline <file>
-                            把当前全部问题写成基线文件（维护动作，总是退出 0）
+                            把当前全部问题写成基线（**会接受新问题**，维护动作）
+      --prune-baseline <file>
+                            只删除基线里已不再出现的条目，**绝不添加**
+                            （修好一批就清理一批，安全性不依赖"记得何时运行"）
 
   -h, --help                显示本帮助
 
@@ -80,6 +87,9 @@ mdkg —— 从 markdown 构建知识图谱，并检查知识库
   # 接入既有项目：先把历史问题冻结，之后只挡新增
   mdkg --posts content --update-baseline .mdkg-baseline.json
   mdkg --posts content --check --baseline .mdkg-baseline.json
+
+  # 修好一批之后清理基线（不会顺手接受新问题）
+  mdkg --posts content --prune-baseline .mdkg-baseline.json
 
   # 让 agent 消费：结构化 JSON，不用正则解析
   mdkg --posts content --check --format json
@@ -149,6 +159,7 @@ async function main() {
 			"max-nodes": { type: "string" },
 			"no-link-edges": { type: "boolean", default: false },
 			"no-anchor-check": { type: "boolean", default: false },
+			"asset-root": { type: "string" },
 			"post-url": { type: "string" },
 			"tag-url": { type: "string" },
 			"category-url": { type: "string" },
@@ -158,6 +169,7 @@ async function main() {
 			strict: { type: "boolean", default: false },
 			baseline: { type: "string" },
 			"update-baseline": { type: "string" },
+			"prune-baseline": { type: "string" },
 			compact: { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
 		},
@@ -172,14 +184,21 @@ async function main() {
 	if (values.strict && !values.check) {
 		throw new Error("--strict 需要与 --check 一起使用。");
 	}
-	if (values.baseline && values["update-baseline"]) {
-		throw new Error("--baseline 与 --update-baseline 不能同时使用（前者读、后者写）。");
+	if (values["update-baseline"] && values["prune-baseline"]) {
+		throw new Error(
+			"--update-baseline 与 --prune-baseline 不能同时使用：\n" +
+				"  前者会**接受**当前全部问题，后者只删除已修好的、绝不添加。",
+		);
+	}
+	if (values.baseline && (values["update-baseline"] || values["prune-baseline"])) {
+		throw new Error("--baseline 是只读的，不能与写入基线的选项同时使用。");
 	}
 	if (values.baseline && !values.check) {
 		throw new Error("--baseline 需要与 --check 一起使用（它只影响检查的判定）。");
 	}
 
-	const checkMode = values.check || Boolean(values["update-baseline"]);
+	const writeBaselineMode = values["update-baseline"] ? "update" : values["prune-baseline"] ? "prune" : null;
+	const checkMode = values.check || writeBaselineMode !== null;
 	const format = String(values.format ?? (checkMode ? "text" : "json")).toLowerCase();
 
 	if (checkMode) {
@@ -215,13 +234,14 @@ async function main() {
 		maxNodes,
 		linkEdges: !values["no-link-edges"],
 		anchorCheck: !values["no-anchor-check"],
+		assetRoot: values["asset-root"] ? path.resolve(String(values["asset-root"])) : null,
 		postUrl: values["post-url"],
 		tagUrl: values["tag-url"],
 		categoryUrl: values["category-url"],
 	});
 
-	// ---- 生成基线（维护动作，总是成功退出） ----
-	if (values["update-baseline"]) {
+	// ---- 写入基线（维护动作，总是成功退出） ----
+	if (writeBaselineMode === "update") {
 		const raw = runChecks({ posts, skipped, graph, minTagCount });
 		const version = await readOwnVersion();
 		const baseline = buildBaseline(raw, { version });
@@ -230,9 +250,43 @@ async function main() {
 
 		process.stdout.write(
 			`已写入基线：${outPath}\n` +
-				`  记录 ${baseline.count} 项（错误 ${raw.errors} · 警告 ${raw.warnings}）\n` +
+				`  记录 ${baseline.count} 项（错误 ${raw.errors} · 警告 ${raw.warnings}）——**当前全部问题都被接受为已知**\n` +
 				`  之后用 --check --baseline ${values["update-baseline"]} 只对新增问题失败。\n`,
 		);
+		return;
+	}
+
+	if (writeBaselineMode === "prune") {
+		const file = String(values["prune-baseline"]);
+		const outPath = path.resolve(file);
+		const existing = await loadBaseline(outPath);
+		if (!existing) {
+			throw new Error(
+				`基线文件不存在：${outPath}\n` + `--prune-baseline 只做删除；创建基线请用 --update-baseline。`,
+			);
+		}
+
+		const raw = runChecks({ posts, skipped, graph, minTagCount });
+		const version = await readOwnVersion();
+		const { baseline, removed, changed } = pruneBaseline(existing, collectKeys(raw), { version });
+
+		if (!changed) {
+			process.stdout.write(`基线无变化：${baseline.count} 项仍全部存在。\n`);
+			return;
+		}
+
+		await fs.writeFile(outPath, serializeBaseline(baseline), "utf8");
+		process.stdout.write(
+			`已清理基线：${outPath}\n` +
+				`  移除 ${removed.length} 项已不再出现的问题，保留 ${baseline.count} 项\n` +
+				`  未添加任何新问题。\n`,
+		);
+		for (const item of removed.slice(0, 10)) {
+			process.stdout.write(`    - ${item.key}\n`);
+		}
+		if (removed.length > 10) {
+			process.stdout.write(`    … 另有 ${removed.length - 10} 项\n`);
+		}
 		return;
 	}
 
@@ -303,10 +357,12 @@ async function main() {
 			`（含 ${meta.linkEdges} 条正文引用）` +
 			`${meta.truncated ? "，已按 --max-nodes 裁剪" : ""}\n`,
 	);
-	if (meta.brokenLinks > 0 || meta.brokenAnchors > 0) {
+	if (meta.brokenLinks > 0 || meta.brokenAnchors > 0 || meta.localPaths > 0 || meta.brokenImages > 0) {
 		const parts = [];
 		if (meta.brokenLinks > 0) parts.push(`${meta.brokenLinks} 条断链`);
 		if (meta.brokenAnchors > 0) parts.push(`${meta.brokenAnchors} 个失效锚点`);
+		if (meta.localPaths > 0) parts.push(`${meta.localPaths} 个本地路径`);
+		if (meta.brokenImages > 0) parts.push(`${meta.brokenImages} 张缺失图片`);
 		process.stderr.write(
 			`提示：发现 ${parts.join("、")}。运行 mdkg --posts ${values.posts} --check 查看明细。\n`,
 		);

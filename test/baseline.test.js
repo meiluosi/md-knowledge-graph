@@ -13,7 +13,9 @@ import {
 	BASELINE_SCHEMA_VERSION,
 	applyBaseline,
 	buildBaseline,
+	collectKeys,
 	parseBaseline,
+	pruneBaseline,
 	serializeBaseline,
 } from "../src/baseline.js";
 import { runChecks, toJsonReport } from "../src/check.js";
@@ -243,8 +245,7 @@ describe("指纹稳定性 —— 基线到底能不能用，全看这个", () =>
 	});
 });
 
-describe("toJsonReport —— agent 可消费的契约", () => {
-	it("带 schemaVersion 与 summary", () => {
+describe("toJsonReport —— agent 可消费的契约", () => {	it("带 schemaVersion 与 summary", () => {
 		const report = toJsonReport(scan(BROKEN));
 		assert.equal(report.schemaVersion, 1);
 		assert.equal(typeof report.summary.errors, "number");
@@ -274,5 +275,119 @@ describe("toJsonReport —— agent 可消费的契约", () => {
 	it("整个报告可 JSON 序列化", () => {
 		const report = toJsonReport(scan(BROKEN));
 		assert.doesNotThrow(() => JSON.stringify(report));
+	});
+});
+
+describe("collectKeys", () => {
+	it("收集全部问题的 key", () => {
+		const result = scan(BROKEN);
+		const keys = collectKeys(result);
+		assert.equal(keys.size, result.errors + result.warnings);
+	});
+
+	it("空结果得到空集合", () => {
+		assert.equal(collectKeys({ groups: [], errors: 0, warnings: 0 }).size, 0);
+	});
+});
+
+describe("pruneBaseline —— 只删不加", () => {
+	// 用一份标签已达阈值的语料，避免"新增文章顺带解决长尾标签警告"
+	// 干扰对「是否添加新问题」的判断。
+	const STABLE_BROKEN = [
+		{ id: "a", title: "A", tags: ["x", "y"], category: "C", content: "[没了](./gone.md)" },
+		{ id: "b", title: "B", tags: ["x", "y"], category: "C", content: "" },
+	];
+
+	it("全部仍存在时不做改动，且标记 changed=false", () => {
+		const result = scan(STABLE_BROKEN);
+		const baseline = buildBaseline(result);
+		const out = pruneBaseline(baseline, collectKeys(result));
+		assert.equal(out.changed, false);
+		assert.equal(out.removed.length, 0);
+		assert.equal(out.baseline, baseline, "内容未变时应返回原对象，不产生新文件内容");
+	});
+
+	it("修好的条目被移除，其余保留", () => {
+		const before = scan(STABLE_BROKEN);
+		const baseline = buildBaseline(before);
+
+		const fixed = [{ ...STABLE_BROKEN[0], content: "" }, STABLE_BROKEN[1]];
+		const out = pruneBaseline(baseline, collectKeys(scan(fixed)));
+
+		assert.equal(out.changed, true);
+		assert.equal(out.removed.length, 1);
+		assert.ok(out.removed[0].key.startsWith("broken-link|"));
+		assert.equal(out.baseline.count, baseline.count - 1);
+		assert.equal(out.baseline.issues.length, baseline.count - 1);
+	});
+
+	it("**不会添加新的问题** —— 这是它与 update 的根本区别", () => {
+		const before = scan(STABLE_BROKEN);
+		const baseline = buildBaseline(before);
+		const countBefore = baseline.issues.length;
+
+		// 出现了一条全新的断链（同一批文章，标签计数不变）
+		const after = scan([
+			...STABLE_BROKEN,
+			{ id: "c", title: "C", tags: ["x", "y"], category: "C", content: "[新的](./new.md)" },
+		]);
+		const out = pruneBaseline(baseline, collectKeys(after));
+
+		assert.equal(out.changed, false, "没有修好任何东西，就不该改动基线");
+		assert.equal(out.baseline.issues.length, countBefore);
+		assert.ok(
+			!out.baseline.issues.some((i) => i.key.includes("new.md")),
+			"新问题绝不能被顺手接受为已知",
+		);
+	});
+
+	it("新旧同时存在时，只删旧的，不加新的", () => {
+		const before = scan(STABLE_BROKEN);
+		const baseline = buildBaseline(before);
+
+		const after = scan([
+			{ ...STABLE_BROKEN[0], content: "" }, // 旧的断链修好了
+			STABLE_BROKEN[1],
+			{ id: "c", title: "C", tags: ["x", "y"], category: "C", content: "[新的](./new.md)" },
+		]);
+		const out = pruneBaseline(baseline, collectKeys(after));
+
+		assert.equal(out.removed.length, 1, "只应移除修好的那条");
+		assert.ok(!out.baseline.issues.some((i) => i.key.includes("new.md")));
+	});
+
+	it("prune 后应用基线，新问题仍然会被报出来", () => {
+		const before = scan(STABLE_BROKEN);
+		const baseline = buildBaseline(before);
+		const after = scan([
+			...STABLE_BROKEN,
+			{ id: "c", title: "C", tags: ["x", "y"], category: "C", content: "[新的](./new.md)" },
+		]);
+
+		const { baseline: pruned } = pruneBaseline(baseline, collectKeys(after));
+		const effective = applyBaseline(after, pruned);
+
+		assert.equal(effective.errors, 1, "新断链必须仍被报出");
+		assert.ok(effective.groups.some((g) => g.items.some((i) => i.message.includes("new.md"))));
+	});
+
+	it("更新 generatedAt 与版本，便于追溯", () => {
+		const result = scan(STABLE_BROKEN);
+		const baseline = buildBaseline(result, { generatedAt: "2026-01-01T00:00:00.000Z", version: "1.0.0" });
+		const fixed = [{ ...STABLE_BROKEN[0], content: "" }, STABLE_BROKEN[1]];
+		const out = pruneBaseline(baseline, collectKeys(scan(fixed)), {
+			generatedAt: "2026-06-01T00:00:00.000Z",
+			version: "2.0.0",
+		});
+		assert.equal(out.baseline.generatedAt, "2026-06-01T00:00:00.000Z");
+		assert.equal(out.baseline.generatedBy, "md-knowledge-graph@2.0.0");
+	});
+
+	it("prune 后的基线仍是合法可解析的", () => {
+		const before = scan(STABLE_BROKEN);
+		const baseline = buildBaseline(before);
+		const fixed = [{ ...STABLE_BROKEN[0], content: "" }, STABLE_BROKEN[1]];
+		const { baseline: pruned } = pruneBaseline(baseline, collectKeys(scan(fixed)));
+		assert.doesNotThrow(() => parseBaseline(serializeBaseline(pruned)));
 	});
 });
