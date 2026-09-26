@@ -116,6 +116,70 @@ jobs:
             echo "✗ 关闭后仍报了失效锚点"; exit 1
           fi
 
+      - name: 基线机制：全已知 → 退出 0
+        run: |
+          rm -rf /tmp/blcorpus && cp -r examples /tmp/blcorpus
+          node src/cli.js --posts /tmp/blcorpus --update-baseline /tmp/bl.json
+          test -s /tmp/bl.json
+          node src/cli.js --posts /tmp/blcorpus --check --baseline /tmp/bl.json
+          echo "✓ 全部问题已记录时退出 0"
+
+      - name: 基线机制：新增问题 → 退出 1，且只报新增
+        run: |
+          cat > /tmp/blcorpus/brand-new.md <<'EOF'
+          ---
+          title: 新文章
+          tags: [推理, 量化]
+          category: 推理
+          ---
+          见 [不存在的文件](./nope.md)
+          EOF
+          if node src/cli.js --posts /tmp/blcorpus --check --baseline /tmp/bl.json > /tmp/newreport.txt 2>&1; then
+            echo "✗ 新增问题没有让检查失败"; exit 1
+          fi
+          grep -q "nope.md" /tmp/newreport.txt || { echo "✗ 未报出新增问题"; exit 1; }
+          if grep -q "deleted-draft" /tmp/newreport.txt; then
+            echo "✗ 旧的已知问题被当成新增报了出来"; cat /tmp/newreport.txt; exit 1
+          fi
+          echo "✓ 只报了新增的那一条"
+
+      - name: 基线 key 稳定（插入无关文章不使基线失效）
+        run: |
+          cp /tmp/blcorpus/brand-new.md /tmp/brand-new.md.bak
+          rm /tmp/blcorpus/brand-new.md
+          printf -- '---\ntitle: 无关文章\ntags: [推理, 量化]\ncategory: 推理\n---\n正文\n' > /tmp/blcorpus/unrelated.md
+          node src/cli.js --posts /tmp/blcorpus --check --baseline /tmp/bl.json > /tmp/stable.txt 2>&1 \
+            && echo "✓ 插入无关文章后基线仍然有效" \
+            || { echo "✗ 指纹不稳定：无关新增让基线失效了"; cat /tmp/stable.txt; exit 1; }
+
+      - name: 结构化 JSON 报告契约
+        run: |
+          node src/cli.js --posts examples --check --format json > /tmp/check.json 2>/dev/null || true
+          node -e '
+            const r = require("/tmp/check.json");
+            if (r.schemaVersion !== 1) { console.error("缺 schemaVersion"); process.exit(1); }
+            if (typeof r.summary.errors !== "number") { console.error("缺 summary"); process.exit(1); }
+            if (!Array.isArray(r.groups)) { console.error("缺 groups"); process.exit(1); }
+            for (const g of r.groups) {
+              if (!g.code || !g.severity || !Array.isArray(g.items)) { console.error("组结构不全:", g.code); process.exit(1); }
+              for (const it of g.items) {
+                if (!it.key || !it.message) { console.error("条目缺 key/message:", it); process.exit(1); }
+              }
+            }
+            const anchor = r.groups.find((g) => g.code === "broken-anchor");
+            if (!anchor || typeof anchor.items[0].sameFile !== "boolean") {
+              console.error("broken-anchor 缺结构化字段"); process.exit(1);
+            }
+            console.log(`✓ JSON 报告：${r.groups.length} 组 / 错误 ${r.summary.errors} / 警告 ${r.summary.warnings}`);
+          '
+
+      - name: 参数互斥与时序错误都要报错
+        run: |
+          node src/cli.js --posts examples --baseline /tmp/x.json 2>/dev/null && { echo "✗ --baseline 单独使用未报错"; exit 1; }
+          node src/cli.js --posts examples --check --baseline /tmp/x.json --update-baseline /tmp/y.json 2>/dev/null && { echo "✗ 互斥参数未报错"; exit 1; }
+          node src/cli.js --posts examples --check --format mermaid 2>/dev/null && { echo "✗ 检查模式接受了出图 format"; exit 1; }
+          echo "✓ 参数校验符合预期"
+
       - name: 自定义 URL 模板与 --no-link-edges 可用
         run: |
           node src/cli.js --posts examples --no-link-edges --format json --out /tmp/nolink.json

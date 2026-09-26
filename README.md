@@ -38,6 +38,62 @@ mdkg --posts ./content -f related -o related.json  # 相关文章
 
 锚点校验按 GitHub 的 slug 规则（用 `github-slugger`，参考实现）。渲染器规则不同的站点用 `--no-anchor-check` 关掉。
 
+### 但它可能一开就红 —— 所以有基线
+
+一个攒了 40 条历史断链的知识库，第一次跑 `--check` 拿到 40 个错误、退出码 1。**人不会去修那 40 条——他会在 CI 里删掉这一步。** 门禁就是这样死的。
+
+基线把已知问题冻结下来，**只有新增问题才失败**：
+
+```bash
+mdkg --posts content --update-baseline .mdkg-baseline.json   # 接入时做一次
+mdkg --posts content --check --baseline .mdkg-baseline.json  # 之后一直用这个
+```
+
+```
+$ mdkg --posts content --check --baseline .mdkg-baseline.json
+检查报告 · content（基线：.mdkg-baseline.json）
+────────────────────────
+✓ 没有新增问题（40 项已知问题仍在基线里）
+────────────────────────
+错误 0 · 警告 0  ·  已知 40 项已忽略
+```
+
+一旦有新东西进来，只有它会被报出来：
+
+```
+✗ 正文断链 —— 1 项（另有 1 项已知，已忽略）
+    new  →  ./nope.md
+错误 1 · 警告 0  ·  已知 40 项已忽略  → 退出码 1
+```
+
+修好的旧问题会被识别出来，提示你清理基线：
+
+```
+ℹ 基线里有 1 项已不再出现，可以清理：
+    broken-link|2026-01-08-qlora-4bit|./deleted.md
+```
+
+基线文件是 **JSON、按 key 排序、可以人工 review** 的——它该被提交进仓库：
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-26T13:59:20.320Z",
+  "generatedBy": "md-knowledge-graph@0.4.0",
+  "count": 9,
+  "issues": [
+    {
+      "key": "broken-anchor|a|b|flash-attention",
+      "code": "broken-anchor",
+      "severity": "error",
+      "message": "a  →  b  #flash-attention"
+    }
+  ]
+}
+```
+
+`key` 只依赖问题本身——**不含行号、顺序、措辞、计数**。所以在语料里插一篇无关文章、或者工具改了一次提示文案，都不会让整份基线失效。这是它能用下去的前提。
+
 ## Quickstart
 
 ```bash
@@ -54,13 +110,15 @@ npm run example        # → examples/graph.json
 |---|---|---|
 | `-p, --posts <dir>` | 语料目录，递归读取 `.md` / `.mdx` | `examples` |
 | `-o, --out <file>` | 输出文件；省略则写 stdout | — |
-| `-f, --format <fmt>` | `json` \| `mermaid` \| `html` \| `related` | `json` |
+| `-f, --format <fmt>` | 出图：`json` \| `mermaid` \| `html` \| `related`<br>检查：`text` \| `json` | `json` / `text` |
 | `--min-tag-count <n>` | 标签出现次数低于 n 不入图 | `2` |
 | `--max-nodes <n>` | 节点数上限 | `200` |
 | `--no-link-edges` | 不生成正文引用边 | — |
 | `--no-anchor-check` | 不校验 `#锚点` 是否存在 | — |
 | `--post-url` / `--tag-url` / `--category-url` | URL 模板，如 `/posts/{id}/` | — |
 | `--check` / `--strict` | 只跑检查；`--strict` 让警告也算失败 | — |
+| `--baseline <file>` | 只对**新增**问题失败 | — |
+| `--update-baseline <file>` | 把当前全部问题写成基线（总是退出 0） | — |
 | `--related-top` / `--related-min-score` | 相关文章数量与阈值 | `5` / `1` |
 
 **退出码**：`0` 正常或检查无错误；`1` 参数/语料错误，或检查发现错误。
@@ -168,10 +226,35 @@ $ mdkg --posts examples --check
 ## 在 CI 里用它
 
 ```yaml
-- run: npx md-knowledge-graph --posts content --check
+- run: npx md-knowledge-graph --posts content --check --baseline .mdkg-baseline.json
 ```
 
-断链会让这一步失败。只想加警告门禁时用 `--strict`。
+新增的断链或失效锚点会让这一步失败。想去掉警告类的历史债时再加 `--strict`。
+
+### 给 agent 用
+
+`--check --format json` 输出结构化结果——每个条目带 `key` 与各自的字段，**不需要正则解析**：
+
+```json
+{
+  "schemaVersion": 1,
+  "summary": { "errors": 1, "warnings": 0, "knownIgnored": 40, "staleBaselineEntries": 0 },
+  "groups": [
+    {
+      "code": "broken-anchor",
+      "severity": "error",
+      "count": 1,
+      "items": [
+        { "key": "broken-anchor|tasks|design|api-contract",
+          "from": "tasks", "to": "design", "anchor": "api-contract", "sameFile": false,
+          "message": "tasks  →  design  #api-contract" }
+      ]
+    }
+  ]
+}
+```
+
+配合基线，agent 拿到的就是**「你这次的改动引入了什么」**，而不是一百条它不该管的旧账。
 
 ## What didn't work
 

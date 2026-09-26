@@ -53,7 +53,7 @@ describe("runChecks —— 警告级", () => {
 	it("只出现一次的标签被报出", () => {
 		const r = setup([{ id: "a", title: "A", tags: ["x", "only"], category: "C", content: "" }]);
 		const g = r.groups.find((x) => x.code === "singleton-tag");
-		assert.ok(g.items.some((i) => i.startsWith("only")));
+		assert.ok(g.items.some((i) => i.message.startsWith("only")));
 	});
 
 	it("大小写不一致的标签被报出且指向同一节点", () => {
@@ -63,8 +63,8 @@ describe("runChecks —— 警告级", () => {
 		]);
 		const g = r.groups.find((x) => x.code === "tag-case");
 		assert.ok(g, "应报出 tag-case");
-		assert.ok(g.items[0].includes("PEFT"));
-		assert.ok(g.items[0].includes("peft"));
+		assert.ok(g.items[0].message.includes("PEFT"));
+		assert.ok(g.items[0].message.includes("peft"));
 	});
 
 	it("缺少 title 的文件被报出", () => {
@@ -72,7 +72,10 @@ describe("runChecks —— 警告级", () => {
 			skipped: [{ file: "no-title.md", reason: "没有 title 字段" }],
 		});
 		const g = r.groups.find((x) => x.code === "missing-title");
-		assert.deepEqual(g.items, ["no-title.md"]);
+		assert.deepEqual(
+			g.items.map((i) => i.message),
+			["no-title.md"],
+		);
 	});
 
 	it("孤立节点被报出", () => {
@@ -82,7 +85,7 @@ describe("runChecks —— 警告级", () => {
 		graph.nodes.push({ id: "tag:lonely", label: "lonely", type: "tag" });
 		const r = runChecks({ posts, skipped: [], graph, minTagCount: 2 });
 		const g = r.groups.find((x) => x.code === "orphan");
-		assert.ok(g.items.some((i) => i.includes("lonely")));
+		assert.ok(g.items.some((i) => i.message.includes("lonely")));
 	});
 
 	it("自引用被报出", () => {

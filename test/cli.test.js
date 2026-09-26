@@ -214,3 +214,111 @@ describe("mdkg 的锚点校验", () => {
 		assert.ok(!r.stdout.includes("fake"), "代码块里的假锚点被误报");
 	});
 });
+
+describe("mdkg 的基线机制", () => {
+	/** 造一个有问题的语料 + 一个临时目录用来放基线文件 */
+	async function fixture() {
+		const dir = await corpus({
+			"a.md": "---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n[没了](./gone.md)\n",
+			"b.md": "---\ntitle: B\ntags: [x, y]\ncategory: C\n---\n[好](./a.md)\n",
+		});
+		const work = await fs.mkdtemp(path.join(os.tmpdir(), "mdkg-bl-"));
+		return { dir, baseline: path.join(work, "baseline.json"), work };
+	}
+
+	it("--update-baseline 写出文件并退出 0", async () => {
+		const { dir, baseline } = await fixture();
+		const r = await mdkg(["--posts", dir, "--update-baseline", baseline]);
+		assert.equal(r.code, 0);
+		assert.ok(r.stdout.includes("已写入基线"));
+
+		const written = JSON.parse(await fs.readFile(baseline, "utf8"));
+		assert.equal(written.schemaVersion, 1);
+		assert.equal(written.count, 1, "只有一条断链");
+	});
+
+	it("全部问题都已记录时，--check --baseline 退出 0", async () => {
+		const { dir, baseline } = await fixture();
+		await mdkg(["--posts", dir, "--update-baseline", baseline]);
+		const r = await mdkg(["--posts", dir, "--check", "--baseline", baseline]);
+		assert.equal(r.code, 0);
+		assert.ok(r.stdout.includes("没有新增问题"));
+	});
+
+	it("出现新问题时退出 1，且只报新增的那条", async () => {
+		const { dir, baseline } = await fixture();
+		await mdkg(["--posts", dir, "--update-baseline", baseline]);
+		await fs.writeFile(
+			path.join(dir, "c.md"),
+			"---\ntitle: C\ntags: [x, y]\ncategory: C\n---\n[又坏了](./nope.md)\n",
+			"utf8",
+		);
+		const r = await mdkg(["--posts", dir, "--check", "--baseline", baseline]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stdout.includes("nope.md"), "应报出新问题");
+		assert.ok(!r.stdout.includes("gone.md"), "旧的已知问题不该出现在新增里");
+		assert.ok(r.stdout.includes("已忽略"), "应说明有已知项被忽略");
+	});
+
+	it("基线文件不存在时只是提示，不失败", async () => {
+		const { dir } = await fixture();
+		const r = await mdkg(["--posts", dir, "--check", "--baseline", "/tmp/definitely-missing-bl.json"]);
+		assert.equal(r.code, 1, "仍按无基线判定（有错误）");
+		assert.ok(r.stderr.includes("不存在"));
+	});
+
+	it("基线文件格式错误时报错退出 1", async () => {
+		const { dir, baseline } = await fixture();
+		await fs.writeFile(baseline, "{ not json", "utf8");
+		const r = await mdkg(["--posts", dir, "--check", "--baseline", baseline]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stderr.includes("不是合法 JSON"));
+	});
+
+	it("--baseline 不配 --check 时报错", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--baseline", "/tmp/x.json"]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stderr.includes("--baseline 需要与 --check"));
+	});
+
+	it("--baseline 与 --update-baseline 互斥", async () => {
+		const r = await mdkg([
+			"--posts", EXAMPLES, "--check", "--baseline", "/tmp/x.json", "--update-baseline", "/tmp/y.json",
+		]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stderr.includes("不能同时使用"));
+	});
+});
+
+describe("mdkg 的结构化检查报告", () => {
+	it("--check --format json 输出合法 JSON 且带 schemaVersion", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--check", "--format", "json"]);
+		assert.equal(r.code, 1, "示例语料有错误");
+		const report = JSON.parse(r.stdout);
+		assert.equal(report.schemaVersion, 1);
+		assert.equal(typeof report.summary.errors, "number");
+		assert.ok(Array.isArray(report.groups));
+	});
+
+	it("JSON 条目是结构化的，不需要正则解析", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--check", "--format", "json"]);
+		const report = JSON.parse(r.stdout);
+		const anchor = report.groups.find((g) => g.code === "broken-anchor");
+		assert.ok(anchor, "应有 broken-anchor 组");
+		const item = anchor.items[0];
+		assert.ok(item.key && item.from && item.anchor);
+		assert.equal(typeof item.sameFile, "boolean");
+	});
+
+	it("检查模式不接受出图用的 format", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--check", "--format", "mermaid"]);
+		assert.equal(r.code, 1);
+		assert.ok(r.stderr.includes("检查模式不支持"));
+	});
+
+	it("检查模式默认 text（不传 --format）", async () => {
+		const r = await mdkg(["--posts", EXAMPLES, "--check"]);
+		assert.ok(r.stdout.includes("检查报告"), "默认应是文本报告");
+		assert.throws(() => JSON.parse(r.stdout), "默认输出不是 JSON");
+	});
+});
