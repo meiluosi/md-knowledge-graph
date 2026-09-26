@@ -1,0 +1,34 @@
+{
+  "name": "md-knowledge-graph",
+  "version": "0.1.0",
+  "description": "从任意 markdown 的 frontmatter 构建知识图谱（tag / category / post 三部图），输出 JSON、Mermaid 或自包含 HTML",
+  "type": "module",
+  "license": "MIT",
+  "author": "枫语 (Feng Yu)",
+  "keywords": [
+    "markdown",
+    "knowledge-graph",
+    "frontmatter",
+    "tags",
+    "graph",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=18.3"
+  },
+  "bin": {
+    "mdkg": "./src/cli.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "example": "node src/cli.js --posts examples --out examples/graph.json --format json",
+    "example:html": "node src/cli.js --posts examples --out examples/graph.html --format html",
+    "example:mermaid": "node src/cli.js --posts examples --out examples/graph.mmd --format mermaid",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
+  }
+}

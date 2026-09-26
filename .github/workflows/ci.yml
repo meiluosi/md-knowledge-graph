@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["18", "20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Test
+        run: npm test
+
+      - name: 三种输出格式都能跑通
+        run: |
+          node src/cli.js --posts examples --out /tmp/graph.json   --format json
+          node src/cli.js --posts examples --out /tmp/graph.mmd    --format mermaid
+          node src/cli.js --posts examples --out /tmp/graph.html   --format html
+          test -s /tmp/graph.json
+          test -s /tmp/graph.mmd
+          test -s /tmp/graph.html
