@@ -18,3 +18,6 @@ tags:
 ## PagedAttention
 
 把 KV cache 切成固定大小的块，用页表管理，消除显存碎片。
+
+量化后的模型在推理阶段的显存收益，见
+[QLoRA 那篇](/posts/2026-01-08-qlora-4bit/) —— 这里用的是站点绝对路径写法。

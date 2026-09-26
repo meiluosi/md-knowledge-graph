@@ -15,11 +15,20 @@ const COLORS = {
 	post: "#2f9e44",
 };
 
+/** 边类型 → 颜色（link 用暖色，与「归属」类边区分开） */
+const EDGE_COLORS = {
+	category: "rgba(232,89,12,0.45)",
+	tag: "rgba(28,126,214,0.40)",
+	link: "rgba(214,51,132,0.75)",
+};
+
 /**
  * 生成 Mermaid 图文本。
  * 这类输出可以直接贴进支持 Mermaid 的 README，无需截图。
  *
- * @param {{nodes: Array<{id: string, label: string, type: string}>, edges: Array<{source: string, target: string}>}} graph
+ * post→post 的引用边用虚线，和 post→tag / post→category 的实线区分开。
+ *
+ * @param {{nodes: Array<{id: string, label: string, type: string}>, edges: Array<{source: string, target: string, type?: string}>}} graph
  * @returns {string}
  */
 export function toMermaid(graph) {
@@ -32,7 +41,8 @@ export function toMermaid(graph) {
 		lines.push(`  ${node.id}${shape[0]}"${esc(node.label)}"${shape[1]}`);
 	}
 	for (const edge of graph.edges) {
-		lines.push(`  ${edge.source} --> ${edge.target}`);
+		const arrow = edge.type === "link" ? "-.->" : "-->";
+		lines.push(`  ${edge.source} ${arrow} ${edge.target}`);
 	}
 
 	return `${lines.join("\n")}\n`;
@@ -56,6 +66,7 @@ export function toHtml(graph, options = {}) {
 	const runtime = `
 var DATA = JSON.parse(document.getElementById('graph-data').textContent);
 var COLORS = ${JSON.stringify(COLORS)};
+var EDGE_COLORS = ${JSON.stringify(EDGE_COLORS)};
 var canvas = document.getElementById('c');
 var ctx = canvas.getContext('2d');
 var W = 0, H = 0, DPR = window.devicePixelRatio || 1;
@@ -114,9 +125,12 @@ function simulate() {
 function draw() {
   ctx.clearRect(0, 0, W, H);
   ctx.save(); ctx.translate(W / 2, H / 2);
-  ctx.strokeStyle = 'rgba(140,150,160,0.35)'; ctx.lineWidth = 1;
+  ctx.lineWidth = 1;
   for (var e = 0; e < edges.length; e++) {
     var s = nodes[index[edges[e].source]], t = nodes[index[edges[e].target]];
+    var et = edges[e].type || 'tag';
+    ctx.strokeStyle = EDGE_COLORS[et] || EDGE_COLORS.tag;
+    ctx.lineWidth = et === 'link' ? 1.8 : 1;
     ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
   }
   for (var i = 0; i < nodes.length; i++) {
@@ -182,6 +196,7 @@ window.addEventListener('resize', function () { resize(); draw(); });
   h1 { margin: 0; font-size: 15px; font-weight: 600; }
   .legend { display: flex; gap: 14px; font-size: 12px; opacity: .75; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  .line { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; }
   canvas { display: block; width: 100vw; height: calc(100vh - 52px); touch-action: none; }
 </style>
 </head>
@@ -192,6 +207,7 @@ window.addEventListener('resize', function () { resize(); draw(); });
     <span><i class="dot" style="background:${COLORS.post}"></i>post</span>
     <span><i class="dot" style="background:${COLORS.tag}"></i>tag</span>
     <span><i class="dot" style="background:${COLORS.category}"></i>category</span>
+    <span><i class="line" style="background:${EDGE_COLORS.link}"></i>引用</span>
   </div>
 </header>
 <canvas id="c"></canvas>
@@ -216,4 +232,4 @@ function escapeHtml(s) {
 	}[c]));
 }
 
-export { COLORS };
+export { COLORS, EDGE_COLORS };

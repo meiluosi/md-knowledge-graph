@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
-import { buildGraph, normalizeList, readPosts, slugify } from "../src/graph.js";
+import { aggregateBySlug, buildGraph, normalizeList, readPosts, slugify } from "../src/graph.js";
 import { toHtml, toMermaid } from "../src/render.js";
 
 const EXAMPLES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "examples");
@@ -80,7 +80,14 @@ describe("readPosts —— 端到端读取示例语料", () => {
 		const posts = await readPosts(EXAMPLES);
 		const qlora = posts.find((p) => p.id.includes("qlora"));
 		assert.ok(qlora, "应能找到 QLoRA 那篇");
-		assert.deepEqual(qlora.tags.sort(), ["QLoRA", "微调", "量化"].sort());
+		assert.deepEqual(qlora.tags.sort(), ["QLoRA", "微调", "量化", "peft"].sort());
+	});
+
+	it("正文被保留下来（链接分析需要它）", async () => {
+		const posts = await readPosts(EXAMPLES);
+		for (const post of posts) {
+			assert.equal(typeof post.content, "string", `${post.id} 应有 content`);
+		}
 	});
 
 	it("标量那篇的标签没有丢", async () => {
@@ -273,5 +280,68 @@ describe("输出渲染", () => {
 		});
 		const html = toHtml(evil);
 		assert.ok(!html.includes("</script><script>x"), "标题里的 </script> 必须被转义");
+	});
+});
+
+describe("同概念不同写法的归并 —— 畸形图的回归测试", () => {
+	// 曾经的 bug：PEFT 与 peft 会生成两个 id 相同、label 不同的节点。
+	// 这不是「多一个节点」，而是破坏了图的完整性：前端按 id 建索引会互相覆盖。
+	const posts = [
+		{ id: "a", title: "A", tags: ["PEFT", "x"], category: "C" },
+		{ id: "b", title: "B", tags: ["peft", "x"], category: "C" },
+	];
+
+	it("aggregateBySlug 把同一 slug 的写法合成一组", () => {
+		const groups = aggregateBySlug(posts, "tags");
+		assert.equal(groups.size, 2, "peft 与 x 两个概念");
+		const peft = groups.get("peft");
+		assert.equal(peft.count, 2, "两篇文章都用了这个概念");
+		assert.deepEqual([...peft.variants.keys()].sort(), ["PEFT", "peft"]);
+	});
+
+	it("少数服从多数选出规范写法", () => {
+		const many = [
+			{ id: "1", tags: ["PEFT"], category: "" },
+			{ id: "2", tags: ["PEFT"], category: "" },
+			{ id: "3", tags: ["PEFT"], category: "" },
+			{ id: "4", tags: ["peft"], category: "" },
+		];
+		assert.equal(aggregateBySlug(many, "tags").get("peft").label, "PEFT");
+	});
+
+	it("票数并列时优先选大写更多的写法", () => {
+		assert.equal(aggregateBySlug(posts, "tags").get("peft").label, "PEFT");
+	});
+
+	it("同一篇文章里两种拼写都写，只算一次", () => {
+		const weird = [{ id: "a", tags: ["PEFT", "peft"], category: "" }];
+		assert.equal(aggregateBySlug(weird, "tags").get("peft").count, 1);
+	});
+
+	it("buildGraph 不产生重复的节点 id", () => {
+		const g = buildGraph(posts, { minTagCount: 1 });
+		const ids = g.nodes.map((n) => n.id);
+		assert.equal(new Set(ids).size, ids.length, `节点 id 有重复：${ids.join(", ")}`);
+	});
+
+	it("buildGraph 不产生悬空边", () => {
+		const g = buildGraph(posts, { minTagCount: 1 });
+		const ids = new Set(g.nodes.map((n) => n.id));
+		for (const e of g.edges) {
+			assert.ok(ids.has(e.source) && ids.has(e.target), `悬空边 ${e.source} → ${e.target}`);
+		}
+	});
+
+	it("同一篇文章的两种拼写只产生一条标签边", () => {
+		const weird = [{ id: "a", title: "A", tags: ["PEFT", "peft"], category: "", content: "" }];
+		const g = buildGraph(weird, { minTagCount: 1 });
+		const tagEdges = g.edges.filter((e) => e.type === "tag");
+		assert.equal(tagEdges.length, 1);
+	});
+
+	it("合并后的 count 用于 minTagCount 判定", () => {
+		// 两种拼写各出现一次，合并后为 2，应通过默认阈值
+		const g = buildGraph(posts, { minTagCount: 2 });
+		assert.ok(g.nodes.some((n) => n.id === "tag:peft"), "合并后 count=2，应入图");
 	});
 });

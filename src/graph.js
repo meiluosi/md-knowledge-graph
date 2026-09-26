@@ -1,8 +1,13 @@
 /**
  * 知识图谱构建核心。
  *
- * 职责边界：这里只做「读 markdown → 解析 frontmatter → 构图」，
+ * 职责边界：这里只做「读 markdown → 解析 frontmatter 与正文链接 → 构图」，
  * 不做任何输出格式的决定（那是 render.js 的事）。
+ *
+ * 图有三种边：
+ *   post → tag        主题归属
+ *   post → category   分类归属
+ *   post → post       正文里的相互引用（这是「知识图谱」真正的价值所在）
  *
  * @module graph
  */
@@ -10,6 +15,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import matter from "gray-matter";
+import { resolvePostLinks } from "./links.js";
 
 /** 跳过这些目录名，避免把依赖或构建产物当成语料 */
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".astro"]);
@@ -73,39 +79,59 @@ export function normalizeList(value) {
 }
 
 /**
- * 读取语料目录，解析出文章元数据。
+ * 读取语料目录，解析出文章元数据与正文，并报告被跳过的文件。
  *
  * @param {string} dir 语料根目录
- * @returns {Promise<Array<{id: string, title: string, tags: string[], category: string, file: string}>>}
+ * @returns {Promise<{
+ *   posts: Array<{id: string, title: string, tags: string[], category: string, file: string, content: string}>,
+ *   skipped: Array<{file: string, reason: string}>,
+ * }>}
  */
-export async function readPosts(dir) {
+export async function readCorpus(dir) {
 	const files = await collectMarkdown(dir);
-	/** @type {Array<{id: string, title: string, tags: string[], category: string, file: string}>} */
+	/** @type {Array<{id: string, title: string, tags: string[], category: string, file: string, content: string}>} */
 	const posts = [];
+	/** @type {Array<{file: string, reason: string}>} */
+	const skipped = [];
 
 	for (const file of files) {
+		const rel = path.relative(dir, file).replace(/\\/g, "/");
 		const raw = await fs.readFile(file, "utf8");
 		let data;
+		let content;
 		try {
-			({ data } = matter(raw));
+			({ data, content } = matter(raw));
 		} catch (err) {
-			throw new Error(`frontmatter 解析失败：${file}\n${/** @type {Error} */ (err).message}`);
+			skipped.push({ file: rel, reason: `frontmatter 解析失败：${/** @type {Error} */ (err).message}` });
+			continue;
 		}
 
 		const title = typeof data.title === "string" ? data.title.trim() : "";
-		// 没有标题的文件无法在图里标识，跳过而不是造一个空节点
-		if (!title) continue;
+		if (!title) {
+			skipped.push({ file: rel, reason: "没有 title 字段" });
+			continue;
+		}
 
 		posts.push({
-			id: path.relative(dir, file).replace(/\\/g, "/").replace(/\.mdx?$/i, ""),
+			id: rel.replace(/\.mdx?$/i, ""),
 			title,
 			tags: normalizeList(data.tags),
 			category: typeof data.category === "string" ? data.category.trim() : "",
 			file,
+			content: content ?? "",
 		});
 	}
 
-	return posts;
+	return { posts, skipped };
+}
+
+/**
+ * 只取文章列表的便捷封装。
+ * @param {string} dir
+ * @returns {Promise<Array<{id: string, title: string, tags: string[], category: string, file: string, content: string}>>}
+ */
+export async function readPosts(dir) {
+	return (await readCorpus(dir)).posts;
 }
 
 /**
@@ -121,63 +147,123 @@ export function slugify(text) {
 }
 
 /**
+ * 按 slug 归并标签或分类：`PEFT` 与 `peft` 是同一个概念，必须合成一个节点。
+ *
+ * 不归并的后果不是「少一个节点」，而是**畸形的图**：两个 id 相同、
+ * label 不同的节点同时存在，Mermaid 里会渲染成重复定义，前端按 id
+ * 建索引时则互相覆盖。这是实测发现的 bug。
+ *
+ * 计数的口径是「有多少篇文章用了这个概念」，所以同一篇文章里同时写了
+ * 两种拼写也只算一次。
+ *
+ * @param {Array<{tags: string[], category: string}>} posts
+ * @param {"tags"|"category"} field
+ * @returns {Map<string, {label: string, count: number, variants: Map<string, number>}>}
+ */
+export function aggregateBySlug(posts, field) {
+	/** @type {Map<string, {label: string, count: number, variants: Map<string, number>}>} */
+	const map = new Map();
+
+	for (const post of posts) {
+		const values = field === "tags" ? post.tags : post.category ? [post.category] : [];
+		const seen = new Set();
+		for (const value of values) {
+			const slug = slugify(value);
+			if (!slug) continue;
+			if (!map.has(slug)) map.set(slug, { label: value, count: 0, variants: new Map() });
+			const group = map.get(slug);
+			group.variants.set(value, (group.variants.get(value) || 0) + 1);
+			if (!seen.has(slug)) {
+				group.count += 1;
+				seen.add(slug);
+			}
+		}
+	}
+
+	// 规范写法：出现次数最多的那个；并列时优先选大写更多的（PEFT 这类缩写
+	// 通常写成大写），再并列则按字典序，保证结果确定。
+	for (const group of map.values()) {
+		group.label = [...group.variants.entries()].sort((a, b) => {
+			if (b[1] !== a[1]) return b[1] - a[1];
+			const caps = (s) => (s.match(/\p{Lu}/gu) ?? []).length;
+			if (caps(b[0]) !== caps(a[0])) return caps(b[0]) - caps(a[0]);
+			return a[0].localeCompare(b[0]);
+		})[0][0];
+	}
+
+	return map;
+}
+
+/**
  * 由文章列表构建图。
  *
- * 结构：post ↔ tag、post ↔ category 的二部边，合成一张三部图。
- *
- * @param {Array<{id: string, title: string, tags: string[], category: string}>} posts
+ * @param {Array<{id: string, title: string, tags: string[], category: string, content?: string}>} posts
  * @param {object} [options]
- * @param {number} [options.minTagCount=2] 标签出现次数低于此值则不入图（避免图谱被长尾标签淹没）
- * @param {number} [options.maxNodes=200] 节点上限，超出时按「分类全留 + 标签按频次」裁剪
- * @param {string} [options.postUrl] 文章 URL 模板，支持 {id} 占位
+ * @param {number} [options.minTagCount=2] 标签出现次数低于此值则不入图
+ * @param {number} [options.maxNodes=200] 节点上限
+ * @param {boolean} [options.linkEdges=true] 是否从正文链接生成 post↔post 边
+ * @param {string} [options.postUrl] 文章 URL 模板，支持 {id}
  * @param {string} [options.tagUrl] 标签 URL 模板，支持 {slug}
  * @param {string} [options.categoryUrl] 分类 URL 模板，支持 {slug}
- * @returns {{nodes: Array<object>, edges: Array<object>, meta: object}}
+ * @returns {{
+ *   nodes: Array<{id: string, label: string, type: string, count?: number, url?: string}>,
+ *   edges: Array<{source: string, target: string, type: "tag"|"category"|"link"}>,
+ *   meta: object,
+ *   links: {edges: Array<{from: string, to: string}>, broken: Array<object>, selfLinks: Array<object>, total: number},
+ * }}
  */
 export function buildGraph(posts, options = {}) {
 	const {
 		minTagCount = 2,
 		maxNodes = 200,
+		linkEdges = true,
 		postUrl,
 		tagUrl,
 		categoryUrl,
 	} = options;
 
-	/** @type {Record<string, number>} */
-	const tagCounts = {};
-	/** @type {Record<string, number>} */
-	const categoryCounts = {};
+	// 按 slug 归并：PEFT / peft 合成一个概念，避免产出 id 重复的畸形节点
+	const tagGroups = aggregateBySlug(posts, "tags");
+	const categoryGroups = aggregateBySlug(posts, "category");
 
-	for (const post of posts) {
-		for (const tag of post.tags) tagCounts[tag] = (tagCounts[tag] || 0) + 1;
-		if (post.category) categoryCounts[post.category] = (categoryCounts[post.category] || 0) + 1;
-	}
+	const withUrl = (template, value) =>
+		template
+			? template.replace(/\{(\w+)\}/g, (_, k) => (k === "id" || k === "slug" ? value : ""))
+			: undefined;
 
-	const withUrl = (template, value) => (template ? template.replace(/\{(\w+)\}/g, (_, k) => (k === "id" || k === "slug" ? value : "")) : undefined);
+	const links = linkEdges
+		? resolvePostLinks(posts)
+		: { edges: [], broken: [], selfLinks: [], total: 0 };
 
 	const nodes = [];
 	const categoryIds = new Set();
 	const tagIds = new Set();
 	const postIds = new Set();
 
-	for (const [name, count] of Object.entries(categoryCounts)) {
-		const slug = slugify(name);
+	for (const [slug, group] of categoryGroups) {
 		const id = `cat:${slug}`;
-		nodes.push({ id, label: name, type: "category", count, url: withUrl(categoryUrl, slug) });
+		nodes.push({ id, label: group.label, type: "category", count: group.count, url: withUrl(categoryUrl, slug) });
 		categoryIds.add(id);
 	}
 
-	for (const [name, count] of Object.entries(tagCounts)) {
-		if (count < minTagCount) continue;
-		const slug = slugify(name);
+	for (const [slug, group] of tagGroups) {
+		if (group.count < minTagCount) continue;
 		const id = `tag:${slug}`;
-		nodes.push({ id, label: name, type: "tag", count, url: withUrl(tagUrl, slug) });
+		nodes.push({ id, label: group.label, type: "tag", count: group.count, url: withUrl(tagUrl, slug) });
 		tagIds.add(id);
 	}
 
+	// 只有被链接指向、或链接出去的文章 id 集合，用于判断文章节点是否有边
+	const linkedFrom = new Set(links.edges.map((e) => e.from));
+	const linkedTo = new Set(links.edges.map((e) => e.to));
+
 	for (const post of posts) {
-		// 没有任何入图标签、也没有分类的文章会成为孤点，不放进图里
-		const hasEdge = post.tags.some((t) => tagIds.has(`tag:${slugify(t)}`)) || (post.category && categoryIds.has(`cat:${slugify(post.category)}`));
+		const hasEdge =
+			post.tags.some((t) => tagIds.has(`tag:${slugify(t)}`)) ||
+			(post.category && categoryIds.has(`cat:${slugify(post.category)}`)) ||
+			linkedFrom.has(post.id) ||
+			linkedTo.has(post.id);
+		// 没有任何连接的叶子节点会让图变成噪声，不入图
 		if (!hasEdge) continue;
 		const id = `post:${post.id}`;
 		nodes.push({ id, label: post.title, type: "post", url: withUrl(postUrl, post.id) });
@@ -190,27 +276,46 @@ export function buildGraph(posts, options = {}) {
 		if (!postIds.has(postId)) continue;
 		if (post.category) {
 			const catId = `cat:${slugify(post.category)}`;
-			if (categoryIds.has(catId)) edges.push({ source: postId, target: catId });
+			if (categoryIds.has(catId)) edges.push({ source: postId, target: catId, type: "category" });
 		}
+		const emitted = new Set();
 		for (const tag of post.tags) {
 			const tagId = `tag:${slugify(tag)}`;
-			if (tagIds.has(tagId)) edges.push({ source: postId, target: tagId });
+			// 同一篇文章里写了 PEFT 又写了 peft，只应产生一条边
+			if (!tagIds.has(tagId) || emitted.has(tagId)) continue;
+			emitted.add(tagId);
+			edges.push({ source: postId, target: tagId, type: "tag" });
 		}
+	}
+
+	// post ↔ post 引用边
+	let linkEdgeCount = 0;
+	for (const { from, to } of links.edges) {
+		const s = `post:${from}`;
+		const t = `post:${to}`;
+		if (!postIds.has(s) || !postIds.has(t)) continue;
+		edges.push({ source: s, target: t, type: "link" });
+		linkEdgeCount += 1;
 	}
 
 	const meta = {
 		posts: posts.length,
 		postsInGraph: postIds.size,
-		tags: Object.keys(tagCounts).length,
+		tags: tagGroups.size,
 		tagsInGraph: tagIds.size,
-		categories: categoryIds.size,
+		categories: categoryGroups.size,
+		linkEdges: linkEdgeCount,
+		linksFound: links.total,
+		brokenLinks: links.broken.length,
 		truncated: false,
 	};
 
 	if (nodes.length > maxNodes) {
 		meta.truncated = true;
 		const cats = nodes.filter((n) => n.type === "category");
-		const tags = nodes.filter((n) => n.type === "tag").sort((a, b) => (b.count || 0) - (a.count || 0));
+		const tags = nodes
+			.filter((n) => n.type === "tag")
+			.sort((a, b) => (b.count || 0) - (a.count || 0));
 		const keepTags = tags.slice(0, Math.max(0, Math.min(30, maxNodes - cats.length)));
 		const keepPosts = nodes
 			.filter((n) => n.type === "post")
@@ -220,8 +325,8 @@ export function buildGraph(posts, options = {}) {
 		const keptNodes = [...cats, ...keepTags, ...keepPosts];
 		const keptEdges = edges.filter((e) => kept.has(e.source) && kept.has(e.target));
 
-		return { nodes: keptNodes, edges: keptEdges, meta };
+		return { nodes: keptNodes, edges: keptEdges, meta, links };
 	}
 
-	return { nodes, edges, meta };
+	return { nodes, edges, meta, links };
 }
