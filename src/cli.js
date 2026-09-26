@@ -18,13 +18,13 @@ import {
 	parseBaseline,
 	serializeBaseline,
 } from "./baseline.js";
-import { formatReport, runChecks, toJsonReport } from "./check.js";
+import { formatGithubAnnotations, formatReport, runChecks, toJsonReport } from "./check.js";
 import { buildGraph, readCorpus } from "./graph.js";
 import { computeRelated } from "./related.js";
 import { toHtml, toMermaid } from "./render.js";
 
 const GRAPH_FORMATS = new Set(["json", "mermaid", "html", "related"]);
-const CHECK_FORMATS = new Set(["text", "json"]);
+const CHECK_FORMATS = new Set(["text", "json", "github"]);
 
 const USAGE = `
 mdkg —— 从 markdown 构建知识图谱，并检查知识库
@@ -36,7 +36,7 @@ mdkg —— 从 markdown 构建知识图谱，并检查知识库
   -p, --posts <dir>         语料目录（默认 examples）
   -o, --out <file>          输出文件（默认写到 stdout）
   -f, --format <fmt>        出图：json | mermaid | html | related（默认 json）
-                            检查：text | json（默认 text）
+                            检查：text | json | github（默认 text）
       --compact             输出不缩进（json / related 格式）
 
 图的范围
@@ -83,6 +83,9 @@ mdkg —— 从 markdown 构建知识图谱，并检查知识库
 
   # 让 agent 消费：结构化 JSON，不用正则解析
   mdkg --posts content --check --format json
+
+  # 在 GitHub Actions 里输出注解（会挂在 PR 的文件上）
+  mdkg --posts content --check --format github
 
   # 生成「相关阅读」数据
   mdkg --posts content --format related --out related.json --related-top 5
@@ -250,6 +253,9 @@ async function main() {
 					values.compact ? 0 : 2,
 				)}\n`,
 			);
+		} else if (format === "github") {
+			// GitHub 注解：会挂在 PR 的 Files changed 上对应文件处
+			process.stdout.write(formatGithubAnnotations(effective));
 		} else {
 			process.stdout.write(
 				formatReport(effective, {

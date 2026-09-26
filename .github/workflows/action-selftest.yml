@@ -1,0 +1,129 @@
+name: Action self-test
+
+# action.yml 本身也需要被测试。
+# 一个坏掉的 action 比没有 action 更糟：使用者会在自己的 CI 里才发现它坏了。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "action.yml"
+      - "scripts/action-report.mjs"
+      - "src/**"
+      - "test/**"
+      - ".github/workflows/action-selftest.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 无基线：示例语料含故意缺陷，action 必须失败且输出计数正确
+  no-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 运行 action（预期失败）
+        id: check
+        continue-on-error: true
+        uses: ./
+        with:
+          posts: examples
+
+      - name: 断言失败与输出
+        run: |
+          set -eu
+          echo "outcome=${{ steps.check.outcome }} errors=${{ steps.check.outputs.errors }} warnings=${{ steps.check.outputs.warnings }}"
+
+          if [ "${{ steps.check.outcome }}" != "failure" ]; then
+            echo "::error::示例语料含故意缺陷（1 断链 + 2 失效锚点），action 本应失败"
+            exit 1
+          fi
+          if [ "${{ steps.check.outputs.errors }}" != "3" ]; then
+            echo "::error::errors 输出应为 3，实际 ${{ steps.check.outputs.errors }}"
+            exit 1
+          fi
+          if [ "${{ steps.check.outputs.warnings }}" != "6" ]; then
+            echo "::error::warnings 输出应为 6，实际 ${{ steps.check.outputs.warnings }}"
+            exit 1
+          fi
+          echo "✓ 无基线：按预期失败，输出计数正确"
+
+  # 有基线：同样的语料必须通过，且 known 计数正确
+  with-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - name: 生成基线
+        run: |
+          npm install --omit=dev --no-audit --no-fund
+          node src/cli.js --posts examples --update-baseline "$RUNNER_TEMP/baseline.json"
+
+      - name: 运行 action（预期通过）
+        id: check
+        uses: ./
+        with:
+          posts: examples
+          baseline: ${{ runner.temp }}/baseline.json
+
+      - name: 断言通过与 known 计数
+        run: |
+          set -eu
+          echo "errors=${{ steps.check.outputs.errors }} known=${{ steps.check.outputs.known }}"
+
+          if [ "${{ steps.check.outputs.errors }}" != "0" ]; then
+            echo "::error::带基线时 errors 应为 0，实际 ${{ steps.check.outputs.errors }}"
+            exit 1
+          fi
+          if [ "${{ steps.check.outputs.known }}" != "9" ]; then
+            echo "::error::known 应为 9，实际 ${{ steps.check.outputs.known }}"
+            exit 1
+          fi
+          echo "✓ 有基线：按预期通过，known=9"
+
+  # --format github 是 action 依赖的底层能力，单独验证它的输出契约
+  github-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - run: npm install --omit=dev --no-audit --no-fund
+
+      - name: 产出合法的注解行
+        run: |
+          set -eu
+          node src/cli.js --posts examples --check --format github > /tmp/gh.txt 2>/dev/null || true
+          node -e '
+            const fs = require("fs");
+            const lines = fs.readFileSync("/tmp/gh.txt", "utf8").trim().split("\n");
+            const ann = lines.filter((l) => l.startsWith("::"));
+            if (ann.length !== 9) {
+              console.error("注解行数应为 9（3 错误 + 6 警告），实际 " + ann.length);
+              process.exit(1);
+            }
+            const re = /^::(error|warning)(?: (.*?))?::(.*)$/;
+            for (const l of ann) {
+              if (!re.test(l)) { console.error("注解行格式不合法: " + l); process.exit(1); }
+            }
+            console.log("✓ --format github 输出 " + ann.length + " 条合法注解");
+          '
+
+      - name: 干净语料不产生注解
+        run: |
+          set -eu
+          mkdir -p /tmp/clean-corpus
+          printf -- '---\ntitle: A\ntags: [x, y]\ncategory: C\n---\n## 第一节\n\n见 [B 第二节](./b.md#second)\n' > /tmp/clean-corpus/a.md
+          printf -- '---\ntitle: B\ntags: [x, y]\ncategory: C\n---\n## Second\n\n回到 [A](./a.md)\n' > /tmp/clean-corpus/b.md
+          node src/cli.js --posts /tmp/clean-corpus --check --format github > /tmp/clean-gh.txt
+          if grep -q '^::' /tmp/clean-gh.txt; then
+            echo "::error::干净语料不应产生注解"; cat /tmp/clean-gh.txt; exit 1
+          fi
+          echo "✓ 干净语料零注解"

@@ -89,7 +89,7 @@ npm run example        # → examples/graph.json
 |---|---|---|
 | `-p, --posts <dir>` | 语料目录，递归读取 `.md` / `.mdx` | `examples` |
 | `-o, --out <file>` | 输出文件；省略则写 stdout | — |
-| `-f, --format <fmt>` | 出图：`json` \| `mermaid` \| `html` \| `related`<br>检查：`text` \| `json` | `json` / `text` |
+| `-f, --format <fmt>` | 出图：`json` \| `mermaid` \| `html` \| `related`<br>检查：`text` \| `json` \| `github` | `json` / `text` |
 | `--min-tag-count <n>` | 标签出现次数低于 n 不入图 | `2` |
 | `--max-nodes <n>` | 节点数上限 | `200` |
 | `--no-link-edges` | 不生成正文引用边 | — |
@@ -202,13 +202,54 @@ $ mdkg --posts examples --check
 
 它不跟 Obsidian 抢可视化，也不跟 lychee 抢全站链接爬取。
 
-## 在 CI 里用它
+## 集成
+
+### GitHub Action
+
+```yaml
+- uses: meiluosi/md-knowledge-graph@v0.5.0
+  with:
+    posts: content
+    baseline: .mdkg-baseline.json   # 可选：只对新增问题失败
+    strict: "false"                 # 可选：true 时警告也算失败
+```
+
+不需要先 `npm install`——action 自己装依赖。
+
+问题以 **GitHub 注解**的形式直接挂在 PR 的 *Files changed* 里对应文件上，不必翻日志：
+
+```
+::error file=content/design.md,title=失效锚点（文件存在，但章节不存在）::tasks → design #api-contract
+```
+
+另外返回三个输出，可在后续步骤里用：
+
+| 输出 | 含义 |
+|---|---|
+| `errors` | 新增错误数 |
+| `warnings` | 新增警告数 |
+| `known` | 被基线忽略的已知问题数 |
+
+**已知限制**：注解只定位到文件，没有行号。行号需要在剥离代码块前后维持偏移映射，代价不小；而**错的行号比没有行号更糟**，所以先不做。
+
+### pre-commit
+
+```yaml
+repos:
+  - repo: https://github.com/meiluosi/md-knowledge-graph
+    rev: v0.5.0
+    hooks:
+      - id: md-knowledge-graph
+        args: [--posts, content, --check]
+```
+
+钩子用 `pass_filenames: false`，因为本工具需要**整份语料**才能判断链接指向是否存在——只给它改动过的文件是判不了的。
+
+### 任意 CI
 
 ```yaml
 - run: npx md-knowledge-graph --posts content --check --baseline .mdkg-baseline.json
 ```
-
-新增的断链或失效锚点会让这一步失败。想去掉警告类的历史债时再加 `--strict`。
 
 ### 给 agent 用
 

@@ -1,6 +1,6 @@
 {
   "name": "md-knowledge-graph",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "从 markdown 的 frontmatter 与正文链接构建知识图谱，并检查知识库（断链 / 失效锚点 / 标签写法不一致），输出 JSON、Mermaid、自包含 HTML 或相关文章数据",
   "type": "module",
   "license": "MIT",

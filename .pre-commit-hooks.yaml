@@ -1,0 +1,40 @@
+# pre-commit 钩子定义
+#
+# 用法（在目标仓库的 .pre-commit-config.yaml 里）：
+#
+#   repos:
+#     - repo: https://github.com/meiluosi/md-knowledge-graph
+#       rev: v0.5.0
+#       hooks:
+#         - id: md-knowledge-graph
+#           args: [--posts, content, --check]
+#
+# 注意两个刻意的设计：
+#
+# 1. `pass_filenames: false`
+#    本工具需要**整份语料**才能解析跨文件链接：只给它改动过的文件，
+#    "链接指向的文章是否存在" 就无从判断。所以它每次都看全量，
+#    而 `files:` 只用来决定**什么时候跑**。
+#
+# 2. 默认 args 只给 `--check`
+#    语料目录必须由使用者显式指定 —— 猜错目录比报错更糟。
+
+- id: md-knowledge-graph
+  name: mdkg —— markdown 知识库检查
+  description: 检查失效锚点、断链与标签一致性
+  entry: mdkg
+  language: node
+  files: \.mdx?$
+  pass_filenames: false
+  args: [--check]
+  require_serial: true
+
+- id: md-knowledge-graph-baseline
+  name: mdkg —— markdown 知识库检查（带基线，只挡新增）
+  description: 同上，但忽略基线里已记录的历史问题，适合接入既有项目
+  entry: mdkg
+  language: node
+  files: \.mdx?$
+  pass_filenames: false
+  args: [--check, --baseline, .mdkg-baseline.json]
+  require_serial: true

@@ -21,7 +21,30 @@
  * @module check
  */
 
+import path from "node:path";
 import { aggregateBySlug } from "./graph.js";
+
+/**
+ * GitHub Actions 工作流命令的转义规则。
+ * 见 https://docs.github.com/actions/reference/workflow-commands-for-github-actions
+ *
+ * 两套规则不一样：属性值还要额外转义 `:` 和 `,`，因为它们是属性分隔符。
+ * 漏掉这一点会让带冒号的路径（或中文标题）把注解整个切错位。
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function escapeData(s) {
+	return String(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
+
+/**
+ * @param {string} s
+ * @returns {string}
+ */
+function escapeProperty(s) {
+	return escapeData(s).replace(/:/g, "%3A").replace(/,/g, "%2C");
+}
 
 /**
  * 对语料跑全部检查。
@@ -34,6 +57,9 @@ import { aggregateBySlug } from "./graph.js";
  * @returns {{groups: Array<{code: string, severity: "error"|"warn", title: string, hint?: string, items: Array<{key: string, message: string}>}>, errors: number, warnings: number}}
  */
 export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
+	/** 文章 id → 源文件路径，供 CI 注解定位文件 */
+	const fileOf = new Map(posts.map((p) => [p.id, p.file ?? ""]));
+
 	/** @type {Array<{code: string, severity: "error"|"warn", title: string, hint?: string, items: Array<Record<string, unknown> & {key: string, message: string}>}>} */
 	const groups = [];
 
@@ -54,6 +80,7 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 			from: b.from,
 			target: b.target,
 			kind: b.kind,
+			file: fileOf.get(b.from) ?? "",
 		})),
 		"链接指向的文章在语料里找不到。检查路径拼写，或该文章是否已被删除。",
 	);
@@ -69,6 +96,7 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 			to: b.to,
 			anchor: b.anchor,
 			sameFile: b.sameFile,
+			file: fileOf.get(b.from) ?? "",
 		})),
 		"章节标题被改名或删除了。这是文档型语料最常见的失效——文件还在，链接已经死了。",
 	);
@@ -113,6 +141,7 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 				key: `untagged|${p.id}`,
 				message: p.id,
 				post: p.id,
+				file: p.file ?? "",
 			})),
 		"这类文章只能靠分类或正文链接连入图；两者都没有时不会出现在图里。",
 	);
@@ -184,6 +213,7 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 			message: `${s.from}  →  ${s.target}`,
 			from: s.from,
 			target: s.target,
+			file: fileOf.get(s.from) ?? "",
 		})),
 	);
 
@@ -258,6 +288,59 @@ export function formatReport(result, options = {}) {
 				: "";
 	const knownNote = result.knownTotal > 0 ? `  ·  已知 ${result.knownTotal} 项已忽略` : "";
 	lines.push(`错误 ${result.errors} · 警告 ${result.warnings}${knownNote}${verdict}`);
+
+	return `${lines.join("\n")}\n`;
+}
+
+/**
+ * 输出 GitHub Actions 注解（workflow commands）。
+ *
+ * 这是「被集成」的关键：注解会直接挂在 PR 的 Files changed 里对应的文件上，
+ * 不需要人去翻 CI 日志。而且它只是 stdout 上的普通文本，
+ * 所以在**任何** workflow 里都能用，不限于本仓库提供的 action。
+ *
+ * 已知限制：只定位到**文件**，没有行号。行号需要在剥离代码块前后
+ * 维持偏移映射，代价不小；而错的准行号比没有行号更糟，所以先不做。
+ *
+ * @param {ReturnType<typeof runChecks>} result
+ * @param {object} [options]
+ * @param {string} [options.cwd] 用于把绝对路径变成仓库相对路径
+ * @returns {string}
+ */
+export function formatGithubAnnotations(result, options = {}) {
+	const cwd = options.cwd ?? process.cwd();
+	const lines = [];
+
+	const annotate = (severity, group, item) => {
+		const kind = severity === "error" ? "error" : "warning";
+		const props = [];
+
+		if (item.file) {
+			const rel = path.isAbsolute(item.file) ? path.relative(cwd, item.file) : item.file;
+			// 相对路径逃出仓库（或为空）时不报文件，避免指向奇怪的位置
+			if (rel && !rel.startsWith("..")) props.push(`file=${escapeProperty(rel)}`);
+		}
+		props.push(`title=${escapeProperty(group.title)}`);
+
+		const head = props.length > 0 ? `::${kind} ${props.join(",")}::` : `::${kind}::`;
+		lines.push(`${head}${escapeData(item.message)}`);
+	};
+
+	for (const group of result.groups) {
+		for (const item of group.items) annotate(group.severity, group, item);
+	}
+
+	for (const stale of result.stale ?? []) {
+		lines.push(`::notice::基线里有已不再出现的问题，可以清理：${escapeData(stale.key)}`);
+	}
+
+	// 人读的汇总行（不是注解，只是日志里的一行）
+	const knownNote = result.knownTotal > 0 ? `，已知 ${result.knownTotal} 项已忽略` : "";
+	if (result.errors === 0 && result.warnings === 0) {
+		lines.push(`✓ 没有新增问题${knownNote}`);
+	} else {
+		lines.push(`错误 ${result.errors} · 警告 ${result.warnings}${knownNote}`);
+	}
 
 	return `${lines.join("\n")}\n`;
 }

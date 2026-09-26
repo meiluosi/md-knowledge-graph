@@ -1,0 +1,107 @@
+name: "md-knowledge-graph check"
+description: >
+  检查 markdown 知识库的失效锚点、断链与标签一致性。
+  支持基线：只有新增问题才会让构建失败。
+author: "枫语 (Feng Yu)"
+
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  posts:
+    description: "语料目录。相对于工作目录。"
+    required: false
+    default: "."
+  baseline:
+    description: >
+      基线文件路径。提供后只对**新增**问题失败——接入既有项目时先跑一次
+      `--update-baseline` 生成它，之后历史债不再阻塞 CI。
+    required: false
+    default: ""
+  strict:
+    description: "为 true 时连警告也算失败。"
+    required: false
+    default: "false"
+  min-tag-count:
+    description: "标签出现次数低于此值则视为长尾，不入图并给出警告。"
+    required: false
+    default: "2"
+  no-anchor-check:
+    description: >
+      为 true 时不校验锚点。渲染器的 slug 规则与本工具的 GitHub 规则不同时使用。
+    required: false
+    default: "false"
+  working-directory:
+    description: "运行目录（通常是仓库根）。"
+    required: false
+    default: "."
+  node-version:
+    description: "使用的 Node 版本。"
+    required: false
+    default: "20"
+
+outputs:
+  errors:
+    description: "新增错误数"
+    value: ${{ steps.check.outputs.errors }}
+  warnings:
+    description: "新增警告数"
+    value: ${{ steps.check.outputs.warnings }}
+  known:
+    description: "被基线忽略的已知问题数"
+    value: ${{ steps.check.outputs.known }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: 安装依赖
+      shell: bash
+      run: |
+        cd "$GITHUB_ACTION_PATH"
+        npm install --omit=dev --no-audit --no-fund --silent
+
+    - name: 检查 markdown
+      id: check
+      shell: bash
+      env:
+        MDKG_IN_POSTS: ${{ inputs.posts }}
+        MDKG_IN_BASELINE: ${{ inputs.baseline }}
+        MDKG_IN_STRICT: ${{ inputs.strict }}
+        MDKG_IN_MIN_TAG: ${{ inputs.min-tag-count }}
+        MDKG_IN_NO_ANCHOR: ${{ inputs.no-anchor-check }}
+        MDKG_IN_WORKDIR: ${{ inputs.working-directory }}
+      run: |
+        set -uo pipefail
+
+        cd "$MDKG_IN_WORKDIR"
+
+        args=(--posts "$MDKG_IN_POSTS" --check --format json --compact)
+        [ -n "$MDKG_IN_BASELINE" ] && args+=(--baseline "$MDKG_IN_BASELINE")
+        [ "$MDKG_IN_STRICT" = "true" ] && args+=(--strict)
+        [ "$MDKG_IN_NO_ANCHOR" = "true" ] && args+=(--no-anchor-check)
+        [ -n "$MDKG_IN_MIN_TAG" ] && args+=(--min-tag-count "$MDKG_IN_MIN_TAG")
+
+        report="$RUNNER_TEMP/mdkg-report.json"
+        set +e
+        node "$GITHUB_ACTION_PATH/src/cli.js" "${args[@]}" > "$report" 2> "$RUNNER_TEMP/mdkg-stderr.txt"
+        code=$?
+        set -e
+
+        # CLI 把进度与提示写在 stderr，原样带出来方便排查
+        cat "$RUNNER_TEMP/mdkg-stderr.txt" >&2 || true
+
+        if [ ! -s "$report" ]; then
+          # 没有报告 = 工具自身出错（参数错、目录读不到），不是发现了问题
+          echo "::error::md-knowledge-graph 未能产出报告（退出码 $code）"
+          exit "$code"
+        fi
+
+        node "$GITHUB_ACTION_PATH/scripts/action-report.mjs" "$report"
+
+        exit "$code"
