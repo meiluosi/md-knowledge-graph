@@ -325,6 +325,55 @@ jobs:
           node src/cli.js --posts docs --check
           echo "✓ docs/ 自身通过检查"
 
+      - name: 配置文件：规则开关、优先级、拼错必须报错
+        run: |
+          set -eu
+          mkdir -p /tmp/cfgcorpus /tmp/cfgwork
+          printf -- '---\ntitle: A\ntags: [x, only]\ncategory: C\n---\n[没了](./gone.md)\n' > /tmp/cfgcorpus/a.md
+
+          # 1. 关掉一条规则 → 它就不该出现
+          printf '%s' '{"rules": {"singleton-tag": "off"}}' > /tmp/cfgwork/off.json
+          node src/cli.js --config /tmp/cfgwork/off.json --posts /tmp/cfgcorpus --check > /tmp/off.txt 2>&1 || true
+          if grep -q "只出现一次的标签" /tmp/off.txt; then
+            echo "::error::规则被 off 后仍在报"; cat /tmp/off.txt; exit 1
+          fi
+          grep -q "singleton-tag=off" /tmp/off.txt || { echo "::error::未说明配置已生效"; exit 1; }
+          echo "✓ 规则可被关闭"
+
+          # 2. 把警告升级为错误 → 退出码与计数都要变
+          printf '%s' '{"rules": {"singleton-tag": "error"}}' > /tmp/cfgwork/up.json
+          node src/cli.js --config /tmp/cfgwork/up.json --posts /tmp/cfgcorpus --check > /tmp/up.txt 2>&1 || true
+          grep -q "✗ 只出现一次的标签" /tmp/up.txt || { echo "::error::升级为 error 未生效"; cat /tmp/up.txt; exit 1; }
+          echo "✓ 级别可被升级"
+
+          # 3. 拼错规则名必须报错（静默失效是最坏的结果）
+          printf '%s' '{"rules": {"untaged": "off"}}' > /tmp/cfgwork/typo.json
+          if node src/cli.js --config /tmp/cfgwork/typo.json --posts /tmp/cfgcorpus --check 2>/tmp/typo.txt; then
+            echo "::error::拼错的规则名没有报错"; exit 1
+          fi
+          grep -q "未知规则" /tmp/typo.txt || { echo "::error::错误信息不明确"; cat /tmp/typo.txt; exit 1; }
+          echo "✓ 拼错规则名会报错"
+
+          # 4. 拼错顶层字段同样必须报错
+          printf '%s' '{"postsDir": "x"}' > /tmp/cfgwork/typo2.json
+          node src/cli.js --config /tmp/cfgwork/typo2.json --posts /tmp/cfgcorpus --check 2>&1 | grep -q "未知字段" \
+            && echo "✓ 拼错字段名会报错" \
+            || { echo "::error::拼错的字段名没有报错"; exit 1; }
+
+          # 5. 自动发现 + 命令行覆盖配置
+          cp /tmp/cfgwork/off.json /tmp/cfgwork/mdkg.config.json
+          ( cd /tmp/cfgwork && node "$GITHUB_WORKSPACE/src/cli.js" --posts /tmp/cfgcorpus --check > /tmp/disc.txt 2>&1 || true )
+          grep -q "读取配置" /tmp/disc.txt || { echo "::error::未自动发现 mdkg.config.json"; cat /tmp/disc.txt; exit 1; }
+          echo "✓ 自动发现配置"
+
+          # 6. --list-rules 列全
+          node src/cli.js --list-rules > /tmp/rules.txt
+          for code in broken-link broken-anchor local-file-path broken-image parse-error \
+                      missing-title untagged singleton-tag tag-case orphan self-link; do
+            grep -q "$code" /tmp/rules.txt || { echo "::error::--list-rules 缺少 $code"; exit 1; }
+          done
+          echo "✓ --list-rules 列出全部 11 条"
+
       - name: 自定义 URL 模板与 --no-link-edges 可用
         run: |
           node src/cli.js --posts examples --no-link-edges --format json --out /tmp/nolink.json

@@ -9,6 +9,7 @@
  *   相关文章 mdkg --posts ./content --format related --out related.json
  */
 
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -20,7 +21,14 @@ import {
 	pruneBaseline,
 	serializeBaseline,
 } from "./baseline.js";
-import { formatGithubAnnotations, formatReport, runChecks, toJsonReport } from "./check.js";
+import { formatGithubAnnotations, formatReport, runChecks, RULES, toJsonReport } from "./check.js";
+import {
+	CONFIG_FILENAME,
+	describeRuleOverrides,
+	findConfigFile,
+	loadConfig,
+	RULE_SEVERITIES,
+} from "./config.js";
 import { buildGraph, readCorpus } from "./graph.js";
 import { computeRelated } from "./related.js";
 import { toHtml, toMermaid } from "./render.js";
@@ -65,6 +73,20 @@ mdkg —— 从 markdown 构建知识图谱，并检查知识库
       --prune-baseline <file>
                             只删除基线里已不再出现的条目，**绝不添加**
                             （修好一批就清理一批，安全性不依赖"记得何时运行"）
+
+配置
+  -c, --config <file>       指定配置文件（默认自动发现 ./${CONFIG_FILENAME}）
+      --list-rules          列出全部检查项与当前生效的级别，然后退出
+
+  配置文件里可以设置任何选项，并逐条覆盖规则级别：
+    {
+      "posts": "content",
+      "minTagCount": 2,
+      "assetRoot": "public",
+      "rules": { "untagged": "off", "singleton-tag": "warn" }
+    }
+  规则级别可取：${RULE_SEVERITIES.join(" | ")}
+  优先级：命令行 > 配置文件 > 默认值
 
   -h, --help                显示本帮助
 
@@ -151,7 +173,7 @@ async function loadBaseline(file) {
 async function main() {
 	const { values } = parseArgs({
 		options: {
-			posts: { type: "string", short: "p", default: "examples" },
+			posts: { type: "string", short: "p" },
 			out: { type: "string", short: "o" },
 			// 刻意不给默认值：出图默认 json，检查默认 text，需按模式区分
 			format: { type: "string", short: "f" },
@@ -170,6 +192,8 @@ async function main() {
 			baseline: { type: "string" },
 			"update-baseline": { type: "string" },
 			"prune-baseline": { type: "string" },
+			config: { type: "string", short: "c" },
+			"list-rules": { type: "boolean", default: false },
 			compact: { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
 		},
@@ -213,36 +237,91 @@ async function main() {
 		);
 	}
 
-	const postsDir = path.resolve(String(values.posts));
-	const minTagCount = toNonNegativeInt(values["min-tag-count"], 2, "min-tag-count");
-	const maxNodes = toNonNegativeInt(values["max-nodes"], 200, "max-nodes");
-	const relatedTop = toNonNegativeInt(values["related-top"], 5, "related-top");
-	const relatedMinScore = toNonNegativeInt(values["related-min-score"], 1, "related-min-score");
+	const cwd = process.cwd();
+
+	// ---- 配置文件：CLI > 配置文件 > 默认值 ----
+	//
+	// 顺序说明：先看有没有 --config；没有就在 cwd 与「命令行给的语料目录」里找。
+	// 不向上递归——一个藏在祖先目录的配置会让"为什么行为不同"极难排查。
+	const cliPostsDir = values.posts ? path.resolve(cwd, String(values.posts)) : null;
+	const explicitConfig = values.config ? path.resolve(cwd, String(values.config)) : null;
+
+	if (explicitConfig && !existsSync(explicitConfig)) {
+		throw new Error(`指定的配置文件不存在：${explicitConfig}`);
+	}
+	const configPath = explicitConfig ?? findConfigFile({ cwd, postsDir: cliPostsDir });
+	const config = configPath ? loadConfig(configPath) : null;
+
+	if (config) {
+		const overrides = describeRuleOverrides(config);
+		process.stderr.write(
+			`读取配置：${configPath}${overrides ? `（规则覆盖：${overrides}）` : ""}\n`,
+		);
+	}
+
+	/** 取值优先级：命令行显式给了就用命令行，否则配置，否则默认 */
+	const pick = (cliValue, key, fallback) =>
+		cliValue !== undefined ? cliValue : config?.[key] !== undefined ? config[key] : fallback;
+
+	// ---- --list-rules：先于读取语料，方便排查"为什么这条不报" ----
+	if (values["list-rules"]) {
+		const configured = config?.rules ?? {};
+		const rows = RULES.map((r) => {
+			const effective = configured[r.code] ?? r.severity;
+			const mark = effective === "off" ? "·" : "●";
+			return `  ${mark} ${r.code.padEnd(18)} ${effective.padEnd(6)} ${r.title}`;
+		});
+		process.stdout.write(
+			`检查项（用 ${CONFIG_FILENAME} 的 rules 逐条覆盖）\n` +
+				`${"─".repeat(64)}\n` +
+				`${rows.join("\n")}\n\n` +
+				`  ● 生效   · 已关闭\n` +
+				`  级别可选：${RULE_SEVERITIES.join(" | ")}\n`,
+		);
+		return;
+	}
+
+	const postsDir = path.resolve(cwd, String(pick(values.posts, "posts", "examples")));
+	const minTagCount = toNonNegativeInt(pick(values["min-tag-count"], "minTagCount"), 2, "min-tag-count");
+	const maxNodes = toNonNegativeInt(pick(values["max-nodes"], "maxNodes"), 200, "max-nodes");
+	const relatedTop = toNonNegativeInt(pick(values["related-top"], "relatedTop"), 5, "related-top");
+	const relatedMinScore = toNonNegativeInt(
+		pick(values["related-min-score"], "relatedMinScore"),
+		1,
+		"related-min-score",
+	);
+
+	// `--no-xxx` 是对配置项的反向覆盖：给了就一定是关
+	const linkEdges = values["no-link-edges"] ? false : pick(undefined, "linkEdges", true);
+	const anchorCheck = values["no-anchor-check"] ? false : pick(undefined, "anchorCheck", true);
+	const assetRootSetting = pick(values["asset-root"], "assetRoot", undefined);
 
 	process.stderr.write(`读取语料：${postsDir}\n`);
 	const { posts, skipped } = await readCorpus(postsDir);
 
 	if (posts.length === 0) {
 		throw new Error(
-			`在 ${postsDir} 里没有找到带 title 的 markdown 文件。\n` +
-				`请确认目录正确，且文件的 frontmatter 里有 title 字段。`,
+			`在 ${postsDir} 里没有找到 markdown 文件。\n` +
+				`请确认目录正确。文件没有 frontmatter 也可以——标题会用第一个一级标题或文件名兜底。`,
 		);
 	}
 
 	const graph = buildGraph(posts, {
 		minTagCount,
 		maxNodes,
-		linkEdges: !values["no-link-edges"],
-		anchorCheck: !values["no-anchor-check"],
-		assetRoot: values["asset-root"] ? path.resolve(String(values["asset-root"])) : null,
-		postUrl: values["post-url"],
-		tagUrl: values["tag-url"],
-		categoryUrl: values["category-url"],
+		linkEdges,
+		anchorCheck,
+		assetRoot: assetRootSetting ? path.resolve(cwd, String(assetRootSetting)) : null,
+		postUrl: pick(values["post-url"], "postUrl"),
+		tagUrl: pick(values["tag-url"], "tagUrl"),
+		categoryUrl: pick(values["category-url"], "categoryUrl"),
 	});
+
+	const rules = config?.rules;
 
 	// ---- 写入基线（维护动作，总是成功退出） ----
 	if (writeBaselineMode === "update") {
-		const raw = runChecks({ posts, skipped, graph, minTagCount });
+		const raw = runChecks({ posts, skipped, graph, minTagCount, rules });
 		const version = await readOwnVersion();
 		const baseline = buildBaseline(raw, { version });
 		const outPath = path.resolve(String(values["update-baseline"]));
@@ -266,7 +345,7 @@ async function main() {
 			);
 		}
 
-		const raw = runChecks({ posts, skipped, graph, minTagCount });
+		const raw = runChecks({ posts, skipped, graph, minTagCount, rules });
 		const version = await readOwnVersion();
 		const { baseline, removed, changed } = pruneBaseline(existing, collectKeys(raw), { version });
 
@@ -292,7 +371,7 @@ async function main() {
 
 	// ---- 检查模式 ----
 	if (values.check) {
-		const raw = runChecks({ posts, skipped, graph, minTagCount });
+		const raw = runChecks({ posts, skipped, graph, minTagCount, rules });
 		const baselineFile = values.baseline ? String(values.baseline) : null;
 		const baseline = baselineFile ? await loadBaseline(baselineFile) : null;
 		const effective = applyBaseline(raw, baseline);

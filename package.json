@@ -1,6 +1,6 @@
 {
   "name": "md-knowledge-graph",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "检查 markdown 知识库：失效锚点/断链/本地路径/缺失图片/标签一致性 · 支持无 frontmatter 的纯 markdown · 基线只挡新增 · 附 GitHub Action 与 pre-commit",
   "type": "module",
   "license": "MIT",
@@ -16,7 +16,10 @@
     "related-posts",
     "broken-links",
     "broken-images",
-    "cli"
+    "cli",
+    "config",
+    "rules",
+    "linter"
   ],
   "engines": {
     "node": ">=18.3"

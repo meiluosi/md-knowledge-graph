@@ -25,6 +25,31 @@ import path from "node:path";
 import { aggregateBySlug } from "./graph.js";
 
 /**
+ * 全部检查项的代码，以及各自的默认级别。
+ *
+ * 这张表是配置文件校验的依据（`mdkg.config.json` 里写了未知规则名要报错），
+ * 也是 `--list-rules` 的数据来源。**新增检查项时必须在这里登记**——
+ * `test/check.test.js` 里有一条测试专门盯这个：
+ * 构造一份能触发全部规则的语料，断言产出的 code 集合与这张表完全一致。
+ */
+export const RULES = [
+	{ code: "broken-link", severity: "error", title: "正文断链（目标文件不存在）" },
+	{ code: "broken-anchor", severity: "error", title: "失效锚点（文件存在，但章节不存在）" },
+	{ code: "local-file-path", severity: "error", title: "本地文件系统路径（在网页上必然打不开）" },
+	{ code: "broken-image", severity: "error", title: "图片文件不存在" },
+	{ code: "parse-error", severity: "error", title: "frontmatter 解析失败" },
+	{ code: "missing-title", severity: "warn", title: "有 frontmatter 但没写 title" },
+	{ code: "untagged", severity: "warn", title: "无标签的文章" },
+	{ code: "singleton-tag", severity: "warn", title: "只出现一次的标签" },
+	{ code: "tag-case", severity: "warn", title: "写法不一致的标签（已按 slug 合并为同一个节点）" },
+	{ code: "orphan", severity: "warn", title: "图中的孤立节点（没有任何边）" },
+	{ code: "self-link", severity: "warn", title: "文章引用了自己" },
+];
+
+/** 全部规则代码 */
+export const RULE_CODES = RULES.map((r) => r.code);
+
+/**
  * GitHub Actions 工作流命令的转义规则。
  * 见 https://docs.github.com/actions/reference/workflow-commands-for-github-actions
  *
@@ -46,6 +71,9 @@ function escapeProperty(s) {
 	return escapeData(s).replace(/:/g, "%3A").replace(/,/g, "%2C");
 }
 
+/** 规则代码 → 元信息 */
+const RULE_BY_CODE = new Map(RULES.map((r) => [r.code, r]));
+
 /**
  * 对语料跑全部检查。
  *
@@ -54,9 +82,10 @@ function escapeProperty(s) {
  * @param {Array<{file: string, reason: string}>} input.skipped
  * @param {ReturnType<import("./graph.js").buildGraph>} input.graph
  * @param {number} [input.minTagCount=2]
+ * @param {Record<string, "error"|"warn"|"off">} [input.rules] 逐条覆盖规则的级别；`off` 表示不报
  * @returns {{groups: Array<{code: string, severity: "error"|"warn", title: string, hint?: string, items: Array<{key: string, message: string}>}>, errors: number, warnings: number}}
  */
-export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
+export function runChecks({ posts, skipped, graph, minTagCount = 2, rules }) {
 	/** 文章 id → 源文件路径，供 CI 注解定位文件 */
 	const fileOf = new Map(posts.map((p) => [p.id, p.file ?? ""]));
 
@@ -66,9 +95,27 @@ export function runChecks({ posts, skipped, graph, minTagCount = 2 }) {
 	/** @type {Array<{code: string, severity: "error"|"warn", title: string, hint?: string, items: Array<Record<string, unknown> & {key: string, message: string}>}>} */
 	const groups = [];
 
+	/**
+	 * 登记一组问题。
+	 *
+	 * 规则的级别可以被配置覆盖：
+	 *   "off"   → 整组丢掉（不产生任何输出，也不计入错误/警告数）
+	 *   "warn"  → 降级
+	 *   "error" → 升级
+	 *
+	 * 未登记的 code 直接抛错，而不是安静地放过去——那样它既不出现在
+	 * `--list-rules` 里，也无法被配置关闭，属于"悄悄多了一条不可控规则"。
+	 */
 	const add = (code, severity, title, items, hint) => {
+		const rule = RULE_BY_CODE.get(code);
+		if (!rule) {
+			throw new Error(`检查项「${code}」没有在 RULES 表里登记（见 src/check.js）`);
+		}
+
+		const override = rules?.[code];
+		if (override === "off") return;
 		if (items.length === 0) return;
-		groups.push({ code, severity, title, items, hint });
+		groups.push({ code, severity: override ?? severity, title, items, hint });
 	};
 
 	// ---- 错误级 ----
