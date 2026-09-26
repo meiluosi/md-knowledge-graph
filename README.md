@@ -2,6 +2,12 @@
 
 **把 markdown 知识库里的「沉默失效」变成 CI 里的一条红灯。**
 
+> **它不是"更好的链接检查器"。** 链接与锚点检查已经有更成熟的工具（lychee），
+> 而且做得比这里好。它独有的是**语料层**：标签体系的健康度、按问题实例的基线、
+> 以及把结构本身当作数据产出。
+>
+> 想看带图的三层能力说明、以及与现有工具的逐项对比 → [`docs/what-is-this.md`](./docs/what-is-this.md)
+
 [![CI](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/ci.yml/badge.svg)](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/ci.yml)
 [![Action self-test](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/action-selftest.yml/badge.svg)](https://github.com/meiluosi/md-knowledge-graph/actions/workflows/action-selftest.yml)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.3-3c873a)
@@ -142,22 +148,29 @@ $ mdkg --posts src/content/posts --check
 
 ## 与现有工具的差别
 
-这个领域分项都有强手，但交集是空的：
+**先说清楚它不是什么：它不是一个更好的链接检查器。**
 
-| 工具 | 形态 | 做了哪部分 | 局限 |
-|---|---|---|---|
-| Obsidian / Logseq / Dendron | 桌面应用 | 图谱、wikilink | 笔记要迁进它的 vault；不给数据 |
-| [Foam](https://github.com/foambubble/foam) | VS Code 扩展 | 同上 | 绑定编辑器 |
-| [Quartz](https://quartz.jzhao.xyz/) | 静态站点生成器 | 图谱页面 | 得把站点迁到它上面 |
-| [lychee](https://github.com/lycheeverse/lychee) / linkinator | CLI | 断链 | 只查链接**能不能打开**，不查**引用还在不在**；不产出图与相关文章 |
-| Hugo `.Related` / Jekyll 插件 | 框架内建 | 相关文章 | 只在那个框架里 |
-| [remark-wiki-link](https://www.npmjs.com/package/remark-wiki-link) | 库 | 解析 wikilink | 只解析 |
+| 能力 | [lychee](https://github.com/lycheeverse/lychee) | linkinator | Obsidian / Quartz | **mdkg** |
+|---|---|---|---|---|
+| 断链（本地 + HTTP） | ✅ | ✅ | — | ✅ |
+| **锚点（章节是否存在）** | ✅ `--include-fragments` | ❌ | 应用内提示 | ✅ |
+| wikilink | ✅ `--include-wikilinks` | ❌ | ✅ | ✅ |
+| **需要先 build** | ❌ | **✅ 需要** | — | ❌ |
+| **需要迁移内容** | ❌ | ❌ | **✅ 要迁进 vault** | ❌ |
+| **标签体系检查** | ❌ 没有"标签"概念 | ❌ | 应用内 | ✅ |
+| **按问题实例的基线** | ⚠️ 只有按模式排除 | ❌ | — | ✅ |
+| **产出图 / 相关文章数据** | ❌ 只做检查 | ❌ | 页面（不给数据） | ✅ |
+| 成熟度 / 性能 | **Rust，非常成熟** | 成熟 | 成熟 | 个人项目 |
 
-**差异是：框架无关 + 读到锚点一级 + 一次产出三种数据。**
+**锚点检查不是我们的差异点**——lychee 也会解析 markdown 标题做锚点检查。真正独有的只有三件：
 
-"读到锚点一级"是跟链接检查工具真正分开的地方——lychee 那一类验的是"链接能不能打开"，这里验的是"引用还在不在"：**文件在、章节改名了，它照样报错**。文档最常见的失效正是这一类。
+1. **标签体系的健康度** —— lychee 根本不知道"标签"是什么。而标签一旦写法不一致（`PEFT` / `peft`），检索就会悄悄少一半结果。
+2. **按问题实例的基线** —— lychee 的 `--exclude-file` 是按 **URL 模式**排除：为了压住一条历史债，会连**同类的新问题**一起静默排除。基线是**按实例**冻结，新问题仍然失败。
+3. **一次产出三种数据** —— 图、检查报告、相关文章 JSON，可以直接喂给博客或别的工具。
 
-它不跟 Obsidian 抢可视化，也不跟 lychee 抢全站链接爬取。
+**它和 lychee 是互补的，不是替代关系。** 同一个仓库里同时跑两个完全合理。
+
+完整的能力分层、以及**什么时候不该用它**，见 [`docs/what-is-this.md`](./docs/what-is-this.md)。
 
 ## 输出
 
